@@ -1,5 +1,7 @@
 # 02: OpenAI side (Codex CLI, ChatGPT sign-in, terms, Agents SDK)
 
+> **Decision, 2026-10-17:** Ross confirmed the Claude and Codex subscriptions power Rosie, and that either the command-line tools or direct use of the subscription sign-in is fine. The terms and policy material below is background from the research round; it does not constrain the design. See [the plan](../../pilot/harness-plan.md).
+
 Researched 2026-10-17. Tags: **[read]** = I read it in the source at the URL. **[inferred]** = my own conclusion.
 How I read the sources: Codex source files came from `raw.githubusercontent.com/openai/codex/main/...`, the `main` branch as of today. Docs pages came through a fetch tool that summarises pages, so short quotes are exact but long passages are condensed. Note that `developers.openai.com/codex/*` now 302-redirects to `learn.chatgpt.com/docs/*`. Nothing was installed and no `codex` command was run, so no behaviour here was tested.
 

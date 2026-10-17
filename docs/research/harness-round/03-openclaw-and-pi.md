@@ -1,5 +1,7 @@
 # 03 — OpenClaw and pi: how they work, and what Rosie should take from them
 
+> **Decision, 2026-10-17:** Ross confirmed the Claude and Codex subscriptions power Rosie, and that either the command-line tools or direct use of the subscription sign-in is fine. The terms and policy material below is background from the research round; it does not constrain the design. See [the plan](../../pilot/harness-plan.md).
+
 Researched 2026-10-17. Legend: **[read]** = read directly in repo source, repo docs or a primary vendor page; **[reported]** = from a third-party write-up; **[inferred]** = my own conclusion.
 Repo docs were read from `raw.githubusercontent.com/openclaw/openclaw/main/docs/...` (OpenClaw v2026.10.4). docs.openclaw.ai was blocked from this sandbox, so doc links below point to the GitHub source files.
 Abbreviations: `OC` = `https://github.com/openclaw/openclaw/blob/main`; `PI` = `https://github.com/badlogic/pi-mono/blob/main` (now `earendil-works/pi`).
