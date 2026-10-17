@@ -62,7 +62,7 @@ export function renderSignIn(state: SignInState): string {
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#f6f3ee" media="(prefers-color-scheme: light)">
 <meta name="theme-color" content="#151413" media="(prefers-color-scheme: dark)">
-<meta name="referrer" content="no-referrer">
+<meta name="referrer" content="same-origin">
 <link rel="icon" href="data:image/svg+xml,${encodeURIComponent(FAVICON)}">
 <title>Sign in · Rosie</title>
 <style>${CSS}${SIGN_IN_CSS}</style>

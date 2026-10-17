@@ -46,6 +46,9 @@ describe("signing in through the page", () => {
     expect(html).toContain('action="/sign-in/send-code"');
     expect(html).toContain('autocomplete="email"');
     expect(html).toContain('<label for="email">');
+    // "no-referrer" would make browsers send `Origin: null` with the form, which the
+    // exact-origin check refuses. Caught in a real browser; keep it out.
+    expect(html).not.toContain("no-referrer");
 
     const sent = await handle(post("/sign-in/send-code", { email: "ross@example.com" }));
     const code = await sent.text();
