@@ -166,7 +166,7 @@ describe("web", () => {
 
     const page = await (await handle(new Request("http://rosie/", { headers }))).text();
     expect(page).toContain("Vacuum inserts");
-    expect(page).toContain("Due 2026-10-24");
+    expect(page).toContain('<time datetime="2026-10-24">Due in 3 days</time>');
 
     expect(page).toContain(`name="csrf" value="${csrfToken(db, "ross")}"`);
 
