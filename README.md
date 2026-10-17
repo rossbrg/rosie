@@ -61,6 +61,7 @@ All in [docs/research](docs/research), newest first:
 - [family-backend-study.md](docs/research/family-backend-study.md) (Sept 22): Tribu, Donetick, Homi/Homebox, Mealie/Grocy, Baby Buddy as backend models.
 - [apple-design-reference-notes.md](docs/research/apple-design-reference-notes.md) (Sept 22): Crouton, Mela, Things, Structured and other Apple-native references.
 - [home-family-agent-setup-research.md](docs/research/home-family-agent-setup-research.md) (Aug 17): safe home/family agent architecture, authority zones, approvals, failure modes.
+- [reference-links.md](docs/research/reference-links.md) (Oct 17): the product and agent links collected in Notion, with which doc covers each.
 - [home-slice-proposal.md](docs/research/home-slice-proposal.md) (June): Notion Home Hub audit and phased engine proposal.
 - [home-slice-prd.md](docs/research/home-slice-prd.md) (June): PRD with phases and user stories.
 - [family-management-research.md](docs/research/family-management-research.md) (June): family-app market scan.
