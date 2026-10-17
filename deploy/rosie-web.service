@@ -1,0 +1,14 @@
+# Rosie's web page, published to the tailnet by `tailscale serve --bg 8787`.
+# Install: copy to ~/.config/systemd/user/, then `systemctl --user enable --now rosie-web`.
+[Unit]
+Description=Rosie web page
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/rosie
+EnvironmentFile=%h/rosie/.env
+ExecStart=%h/.bun/bin/bun src/main.ts serve
+Restart=on-failure
+
+[Install]
+WantedBy=default.target

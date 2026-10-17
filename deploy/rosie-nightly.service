@@ -1,0 +1,9 @@
+# One nightly maintenance check; started by rosie-nightly.timer.
+[Unit]
+Description=Rosie nightly maintenance check
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/rosie
+EnvironmentFile=%h/rosie/.env
+ExecStart=%h/.bun/bin/bun src/main.ts nightly

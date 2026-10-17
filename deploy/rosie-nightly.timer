@@ -1,0 +1,12 @@
+# Install: copy with rosie-nightly.service to ~/.config/systemd/user/,
+# then `systemctl --user enable --now rosie-nightly.timer`.
+[Unit]
+Description=Run Rosie's maintenance check every night
+
+[Timer]
+OnCalendar=*-*-* 03:00
+# Run on boot if the machine was off at 03:00.
+Persistent=true
+
+[Install]
+WantedBy=timers.target
