@@ -13,6 +13,7 @@ export interface Viewer {
 interface OpenRow {
   id: number;
   due_on: string;
+  snoozed_from: string | null;
   title: string;
   checklist: string | null;
   item: string;
@@ -25,6 +26,22 @@ interface UpcomingRow extends Schedule {
   has_open: number;
 }
 
+interface RequestRow {
+  id: number;
+  text: string;
+  status: "pending" | "answered" | "error";
+  reply: string | null;
+  error: string | null;
+}
+
+interface ProposalRow {
+  id: number;
+  request_id: number;
+  summary: string;
+  status: "proposed" | "applied" | "dismissed" | "failed";
+  error: string | null;
+}
+
 interface HistoryRow {
   title: string;
   item: string;
@@ -33,10 +50,17 @@ interface HistoryRow {
   notes: string | null;
 }
 
-export function renderHome(db: Database, me: Viewer, today: string, csrf: string): string {
+export function renderHome(
+  db: Database,
+  me: Viewer,
+  today: string,
+  csrf: string,
+  // `now` is set when "Tell Rosie" is available.
+  ask: { now: Date } | null = null,
+): string {
   const open = db
     .query<OpenRow, []>(
-      `SELECT o.id, o.due_on, s.title, s.checklist, i.name AS item, p.name AS owner
+      `SELECT o.id, o.due_on, o.snoozed_from, s.title, s.checklist, i.name AS item, p.name AS owner
        FROM occurrences o JOIN schedules s ON s.id = o.schedule_id JOIN items i ON i.id = s.item_id
        LEFT JOIN people p ON p.id = o.owner_id
        WHERE o.status = 'open' ORDER BY o.due_on`,
@@ -129,6 +153,8 @@ export function renderHome(db: Database, me: Viewer, today: string, csrf: string
     <p class="summary">${esc(summary)}</p>
   </section>
 
+  ${ask ? askSection(db, me, csrf, ask.now) : ""}
+
   <section aria-labelledby="due-h">
     <h2 id="due-h">Due now</h2>
     ${dueHtml}
@@ -161,7 +187,7 @@ function dueCard(o: OpenRow, today: string, csrf: string): string {
         ${o.owner ? `<span class="owner"><span class="avatar" aria-hidden="true">${esc(initials(o.owner))}</span>${esc(o.owner)}</span>` : ""}
       </div>
       <h3>${esc(o.title)}</h3>
-      <p class="item">${esc(o.item)}</p>
+      <p class="item">${esc(o.item)}${o.snoozed_from ? ` · moved from ${esc(shortDate(o.snoozed_from))}` : ""}</p>
       ${
         steps.length
           ? `<details class="steps"${steps.length <= 3 ? " open" : ""}>
@@ -176,6 +202,72 @@ function dueCard(o: OpenRow, today: string, csrf: string): string {
         <button type="submit">${ICON.check}<span>Mark done</span></button>
       </form>
     </article>`;
+}
+
+// The "Tell Rosie" box, with this person's latest messages and what Rosie suggested.
+// Shows anything still waiting on a decision, plus the last day's conversation.
+function askSection(db: Database, me: Viewer, csrf: string, now: Date): string {
+  const requests = db
+    .query<RequestRow, [string, string]>(
+      `SELECT r.id, r.text, r.status, r.reply, r.error FROM requests r
+       WHERE r.person_id = ? AND (r.created_at >= ?
+         OR EXISTS (SELECT 1 FROM proposals p WHERE p.request_id = r.id AND p.status = 'proposed'))
+       ORDER BY r.id DESC LIMIT 4`,
+    )
+    .all(me.id, new Date(now.getTime() - 86_400_000).toISOString());
+  const proposals = requests.length
+    ? db
+        .query<ProposalRow, []>(
+          `SELECT id, request_id, summary, status, error FROM proposals
+           WHERE request_id IN (${requests.map((r) => r.id).join(",")}) ORDER BY id`,
+        )
+        .all()
+    : [];
+  const thread = requests
+    .map((r) => {
+      const mine = proposals.filter((p) => p.request_id === r.id);
+      const answer =
+        r.status === "error"
+          ? `<p class="bubble rosie error">${esc(r.error ?? "Something went wrong.")}</p>`
+          : r.reply
+            ? `<p class="bubble rosie">${esc(r.reply)}</p>`
+            : "";
+      return `
+      <div class="exchange">
+        <p class="bubble me">${esc(r.text)}</p>
+        ${answer}
+        ${mine.map((p) => proposalRow(p, csrf)).join("")}
+      </div>`;
+    })
+    .join("");
+  return `
+  <section id="ask" aria-labelledby="ask-h">
+    <h2 id="ask-h">Tell Rosie</h2>
+    <form method="post" action="/ask" class="ask" onsubmit="const b = this.querySelector('button'); b.disabled = true; b.textContent = 'Reading…';">
+      <input type="hidden" name="csrf" value="${esc(csrf)}">
+      <textarea name="message" rows="2" maxlength="2000" required aria-label="Message to Rosie"
+        placeholder="“Vacuumed the inserts yesterday” or “move the tank to Sunday”"></textarea>
+      <button type="submit">Send</button>
+    </form>
+    ${thread}
+  </section>`;
+}
+
+function proposalRow(p: ProposalRow, csrf: string): string {
+  if (p.status !== "proposed") {
+    const label = p.status === "applied" ? "Done" : p.status === "dismissed" ? "Dismissed" : `Couldn't do it: ${p.error ?? "unknown error"}`;
+    return `<div class="proposal ${p.status}"><p>${esc(p.summary)}</p><span class="state">${esc(label)}</span></div>`;
+  }
+  const button = (verb: "approve" | "dismiss", label: string) => `
+        <form method="post" action="/proposals/${p.id}/${verb}">
+          <input type="hidden" name="csrf" value="${esc(csrf)}">
+          <button type="submit" class="${verb}">${label}</button>
+        </form>`;
+  return `
+      <div class="proposal">
+        <p>${esc(p.summary)}</p>
+        <div class="choices">${button("approve", "Do it")}${button("dismiss", "No")}</div>
+      </div>`;
 }
 
 // "Due today", "Due in 6 days", "3 days overdue".
@@ -338,5 +430,36 @@ h3 { margin: 12px 0 2px; font-size: 19px; line-height: 1.25; font-weight: 650; l
 .empty-mark { display: inline-grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; color: var(--ok); background: var(--ok-bg); }
 .muted { color: var(--muted); }
 .pad { margin: 0; padding: 14px 16px; }
+.ask { display: flex; gap: 8px; align-items: flex-end; }
+.ask textarea {
+  flex: 1; min-width: 0; font: inherit; font-size: 16px; color: var(--text); resize: vertical;
+  background: var(--surface); border: 1px solid var(--line); border-radius: 14px; padding: 11px 12px; box-shadow: var(--shadow);
+}
+.ask textarea::placeholder { color: var(--muted); }
+.ask textarea:focus { outline: none; border-color: var(--accent); }
+.ask button, .proposal button.approve {
+  flex: none; cursor: pointer; font: inherit; font-weight: 650; color: var(--accent-ink); background: var(--accent);
+  border: 0; border-radius: 12px; padding: 11px 16px;
+}
+.exchange { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
+.bubble { margin: 0; padding: 9px 13px; border-radius: 16px; max-width: 88%; line-height: 1.35; }
+.bubble.me { align-self: flex-end; background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: 5px; }
+.bubble.rosie { align-self: flex-start; background: var(--surface); border: 1px solid var(--line); border-bottom-left-radius: 5px; }
+.bubble.error { color: var(--late); }
+.proposal {
+  display: flex; align-items: center; gap: 10px; justify-content: space-between;
+  background: var(--surface-2); border-radius: 14px; padding: 10px 12px;
+}
+.proposal p { margin: 0; font-size: 15px; }
+.proposal .choices { display: flex; gap: 6px; flex: none; }
+.proposal form { margin: 0; }
+.proposal button { padding: 8px 12px; font-size: 14px; }
+.proposal button.dismiss {
+  cursor: pointer; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted);
+  background: transparent; border: 1px solid var(--line); border-radius: 12px;
+}
+.proposal .state { flex: none; color: var(--muted); font-size: 13px; font-weight: 600; }
+.proposal.applied .state { color: var(--ok); }
+.proposal.failed .state { color: var(--late); flex: 0 1 auto; }
 @media (min-width: 720px) { main { padding-top: 32px; } h1 { font-size: 38px; } }
 `;

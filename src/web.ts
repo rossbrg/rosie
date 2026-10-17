@@ -1,5 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
+import { ask, decide, DecisionError, type Interpreter } from "./ask";
 import { todayIn } from "./dates";
 import { completeOccurrence, CompletionError, health } from "./maintenance";
 import { renderHome } from "./page";
@@ -8,8 +9,13 @@ export interface WebOptions {
   timeZone?: string;
   // Local development only: treat requests to localhost without a Tailscale header as this login.
   devLogin?: string;
+  // Reads "Tell Rosie" messages. Without one, the page doesn't offer the box.
+  interpreter?: Interpreter;
   now?: () => Date;
 }
+
+// The longest message Rosie will read.
+const MAX_MESSAGE = 2000;
 
 interface Person {
   id: string;
@@ -41,8 +47,7 @@ export function createHandler(db: Database, opts: WebOptions = {}) {
     const me = caller(req);
     if (!me) return new Response("Not signed in to the household tailnet.", { status: 401 });
 
-    const done = url.pathname.match(/^\/occurrences\/(\d+)\/complete$/);
-    if (done && req.method === "POST") {
+    if (req.method === "POST") {
       // Identity comes from the network, not a cookie, so any page a household member
       // visits could post here. Require a same-origin request carrying this person's token.
       const site = req.headers.get("Sec-Fetch-Site");
@@ -51,25 +56,54 @@ export function createHandler(db: Database, opts: WebOptions = {}) {
       if (!validToken(db, me.id, String(form.get("csrf") ?? ""))) {
         return new Response("Reload the page and try again.", { status: 403 });
       }
-      const notes = String(form.get("notes") ?? "").trim() || null;
-      try {
-        completeOccurrence(db, Number(done[1]), me.id, todayIn(opts.timeZone, now()), notes, now());
-      } catch (err) {
-        if (err instanceof CompletionError) return new Response(err.message, { status: err.status });
-        throw err;
+      const today = todayIn(opts.timeZone, now());
+
+      const done = url.pathname.match(/^\/occurrences\/(\d+)\/complete$/);
+      if (done) {
+        const notes = String(form.get("notes") ?? "").trim() || null;
+        try {
+          completeOccurrence(db, Number(done[1]), me.id, today, notes, now());
+        } catch (err) {
+          if (err instanceof CompletionError) return new Response(err.message, { status: err.status });
+          throw err;
+        }
+        return home();
       }
-      // Relative, because Rosie only sees plain HTTP behind `tailscale serve`'s HTTPS.
-      return new Response(null, { status: 303, headers: { Location: "/" } });
+
+      if (url.pathname === "/ask" && opts.interpreter) {
+        const message = String(form.get("message") ?? "").trim();
+        if (!message) return home("#ask");
+        if (message.length > MAX_MESSAGE) return new Response(`Keep it under ${MAX_MESSAGE} characters.`, { status: 413 });
+        await ask(db, opts.interpreter, me.id, message, today, now);
+        return home("#ask");
+      }
+
+      const decision = url.pathname.match(/^\/proposals\/(\d+)\/(approve|dismiss)$/);
+      if (decision) {
+        try {
+          decide(db, Number(decision[1]), me.id, decision[2] === "approve", today, now());
+        } catch (err) {
+          if (err instanceof DecisionError) return new Response(err.message, { status: err.status });
+          throw err;
+        }
+        return home("#ask");
+      }
     }
 
     if (url.pathname === "/" && req.method === "GET") {
-      return new Response(renderHome(db, me, todayIn(opts.timeZone, now()), csrfToken(db, me.id)), {
+      return new Response(renderHome(db, me, todayIn(opts.timeZone, now()), csrfToken(db, me.id), opts.interpreter ? { now: now() } : null), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
 
     return new Response("Not found", { status: 404 });
   };
+}
+
+// Back to the page after a form post. Relative, because Rosie only sees plain HTTP
+// behind `tailscale serve`'s HTTPS.
+function home(anchor = ""): Response {
+  return new Response(null, { status: 303, headers: { Location: `/${anchor}` } });
 }
 
 function csrfSecret(db: Database): string {
