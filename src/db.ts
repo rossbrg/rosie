@@ -1,7 +1,6 @@
 import { Database } from "bun:sqlite";
 
 // Each entry runs once, in order. Never edit a shipped migration; add a new one.
-// (Migration 1 has not shipped to a household database yet.)
 const MIGRATIONS: string[] = [
   `
   CREATE TABLE people (
@@ -88,6 +87,37 @@ const MIGRATIONS: string[] = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  `,
+  `
+  -- Something a person told Rosie in their own words, and how she answered.
+  CREATE TABLE requests (
+    id INTEGER PRIMARY KEY,
+    person_id TEXT NOT NULL REFERENCES people(id),
+    text TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('pending', 'answered', 'error')),
+    reply TEXT,
+    error TEXT,
+    model TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    created_at TEXT NOT NULL,
+    finished_at TEXT
+  );
+
+  -- A change Rosie proposed from a request. Nothing is written until the person approves it.
+  CREATE TABLE proposals (
+    id INTEGER PRIMARY KEY,
+    request_id INTEGER NOT NULL REFERENCES requests(id),
+    action TEXT NOT NULL,                 -- validated action, JSON
+    summary TEXT NOT NULL,                -- what approving it will do, written by code, not the model
+    status TEXT NOT NULL DEFAULT 'proposed' CHECK (status IN ('proposed', 'applied', 'dismissed', 'failed')),
+    decided_by TEXT REFERENCES people(id),
+    decided_at TEXT,
+    error TEXT
+  );
+
+  -- Set on the first snooze, so the page can say what it was originally due.
+  ALTER TABLE occurrences ADD COLUMN snoozed_from TEXT;
   `,
 ];
 

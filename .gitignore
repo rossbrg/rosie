@@ -6,3 +6,4 @@ data/
 *.sqlite-*
 .env
 seed/*.local.json
+evals/results/

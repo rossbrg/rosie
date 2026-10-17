@@ -8,10 +8,14 @@
     "nightly": "bun src/main.ts nightly",
     "serve": "bun src/main.ts serve",
     "test": "bun test",
-    "typecheck": "bunx tsc --noEmit"
+    "typecheck": "bunx tsc --noEmit",
+    "eval": "bun evals/run.ts"
   },
   "devDependencies": {
     "@types/bun": "^1.4.3",
     "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.135.0"
   }
 }

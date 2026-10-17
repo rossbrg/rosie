@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { claudeInterpreter } from "./ask";
 import { openDb } from "./db";
 import { runNightly } from "./nightly";
 import { channelsFromEnv } from "./notify";
@@ -41,7 +42,17 @@ switch (process.argv[2]) {
     }
     const port = Number(env.PORT ?? 8787);
     // Bind to localhost; `tailscale serve` publishes it to the tailnet with identity headers.
-    Bun.serve({ hostname: "127.0.0.1", port, fetch: createHandler(db, { timeZone: env.ROSIE_TZ, devLogin: env.ROSIE_DEV_LOGIN }) });
+    // "Tell Rosie" needs an Anthropic API key; without one the page simply doesn't offer it.
+    const interpreter = env.ANTHROPIC_API_KEY
+      ? claudeInterpreter({ apiKey: env.ANTHROPIC_API_KEY, model: env.ROSIE_MODEL || undefined })
+      : undefined;
+    Bun.serve({
+      hostname: "127.0.0.1",
+      port,
+      // Rosie waits on the model while reading a message; give it longer than Bun's 10s default.
+      idleTimeout: 120,
+      fetch: createHandler(db, { timeZone: env.ROSIE_TZ, devLogin: env.ROSIE_DEV_LOGIN, interpreter }),
+    });
     console.log(`Rosie on http://127.0.0.1:${port}`);
     break;
   }
