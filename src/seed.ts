@@ -27,21 +27,34 @@ interface SeedFile {
   }[];
 }
 
+const DATE = /^\d{4}-\d{2}-\d{2}$/;
+
+// Strict YYYY-MM-DD that is a real calendar day (rejects 2026-2-9 and 2026-02-30).
+function checkDate(value: string, where: string): void {
+  const d = new Date(`${value}T00:00:00Z`);
+  if (!DATE.test(value) || Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== value) {
+    throw new Error(`${where}: "${value}" is not a YYYY-MM-DD date`);
+  }
+}
+
 // Upserts the seed so it can be re-run after edits. People's logins, emails and
 // push topics live in an untracked `*.local.json` next to the seed and override it.
+// They are only ever filled in, never cleared, so seeding without the local file is safe.
 export function seed(db: Database, path: string, now: Date): void {
   const base = JSON.parse(readFileSync(path, "utf8")) as SeedFile;
   const localPath = path.replace(/\.json$/, ".local.json");
   const local: SeedFile = existsSync(localPath) ? JSON.parse(readFileSync(localPath, "utf8")) : {};
   const people = new Map((base.people ?? []).map((p) => [p.id, p]));
   for (const p of local.people ?? []) people.set(p.id, { ...people.get(p.id), ...p });
+  for (const s of base.schedules ?? []) checkDate(s.starts_on, `schedule ${s.id} starts_on`);
+  for (const h of base.history ?? []) checkDate(h.completed_on, `history "${h.title}" completed_on`);
 
   db.transaction(() => {
     for (const p of people.values()) {
       db.run(
         `INSERT INTO people (id, name, login, email, ntfy_topic) VALUES (?, ?, ?, ?, ?)
-         ON CONFLICT (id) DO UPDATE SET name = excluded.name, login = excluded.login,
-           email = excluded.email, ntfy_topic = excluded.ntfy_topic`,
+         ON CONFLICT (id) DO UPDATE SET name = excluded.name, login = COALESCE(excluded.login, people.login),
+           email = COALESCE(excluded.email, people.email), ntfy_topic = COALESCE(excluded.ntfy_topic, people.ntfy_topic)`,
         [p.id, p.name, p.login ?? null, p.email ?? null, p.ntfy_topic ?? null],
       );
     }
@@ -76,10 +89,12 @@ export function seed(db: Database, path: string, now: Date): void {
       );
     }
     for (const h of base.history ?? []) {
-      // Imported history has no occurrence; dedupe on its source page.
+      // Imported history has no occurrence; dedupe on its source page, or on what and when.
       const seen = h.source_url
         ? db.query("SELECT 1 FROM completions WHERE source_url = ?").get(h.source_url)
-        : null;
+        : db
+            .query("SELECT 1 FROM completions WHERE occurrence_id IS NULL AND item_id = ? AND title = ? AND completed_on = ?")
+            .get(h.item_id, h.title, h.completed_on);
       if (seen) continue;
       db.run(
         `INSERT INTO completions (schedule_id, item_id, title, completed_on, completed_by, notes, source_url, created_at)
@@ -96,5 +111,5 @@ export function seed(db: Database, path: string, now: Date): void {
         ],
       );
     }
-  })();
+  }).immediate();
 }

@@ -25,8 +25,8 @@ On the home server:
 
 - Run `bun run nightly` from a systemd timer or cron at night.
 - Publish the page to the tailnet with `tailscale serve --bg 8787`. Rosie identifies people from the `Tailscale-User-Login` header that `tailscale serve` adds, so it must stay bound to localhost.
-- Point an outside monitor (Uptime Kuma, Healthchecks, Home Assistant) at `/healthz`. It returns 503 when the last good nightly run is older than 36 hours, so a dead server still gets noticed.
-- Without `RESEND_API_KEY` or `NTFY_URL`, messages print to the console instead of sending.
+- Point an outside monitor (Uptime Kuma, Healthchecks, Home Assistant) at `/healthz`. It returns 503 when the last good nightly run is older than 36 hours, when a message gave up after 5 tries or has sat unsent for 36 hours, or when a schedule couldn't be planned, so a dead server or a broken channel still gets noticed.
+- Messages wait in the queue until their channel is set up and the person has an address; nothing is marked sent that wasn't. Set `ROSIE_CONSOLE_CHANNELS=1` to print them instead while developing.
 
 ## Pilot
 
