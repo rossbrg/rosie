@@ -5,7 +5,7 @@ import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emailOTP } from "better-auth/plugins/email-otp";
 import type { EmailAuthConfig } from "./auth-config";
 import { consumeCodeRequest } from "./auth-limits";
-import type { CodeSender } from "./auth-mail";
+import { CodeDeliveryError, type CodeSender } from "./auth-mail";
 import { renderSignIn, type SignInState } from "./auth-page";
 import { checkAuthProvisioned, enabledAuthPeople, looksLikeEmail, mappedAuthPerson, normalizeEmail, type AuthPerson } from "./auth-users";
 import { validToken } from "./csrf";
@@ -35,8 +35,8 @@ export const SESSION_DAYS = 30;
 const DAY = 86_400;
 const BASE_PATH = "/api/auth";
 // The library would otherwise read the client address from X-Forwarded-For, which
-// anyone can send. Rosie sets this header itself on every call, so its limits are
-// per route for the whole household, and nothing a browser sends picks the bucket.
+// anyone can send. Rosie sets this header itself on every call (see `bucket`), so
+// nothing a browser sends picks which of the library's rate-limit buckets is used.
 const CLIENT_HEADER = "x-rosie-client";
 // The only library routes Rosie uses; everything else is refused even internally.
 const ROUTES = new Set(["/email-otp/send-verification-otp", "/sign-in/email-otp", "/sign-out", "/get-session"]);
@@ -147,28 +147,43 @@ export function createAuthService(
     return next;
   };
 
-  function call(path: string, body: object, cookie?: string): Promise<Response> {
-    const headers = new Headers({ "content-type": "application/json", origin: config.baseURL, [CLIENT_HEADER]: "127.0.0.1" });
+  // The library limits by client address, which Rosie can't know behind `tailscale
+  // serve`. One shared bucket would let anyone on the tailnet lock Ross out with a few
+  // wrong codes for made-up addresses, so each address gets its own: a private-range
+  // IPv6 address derived from it (the library buckets IPv6 by /64, which holds the
+  // derived part). Every address is treated the same, so the limits reveal nothing.
+  function bucket(email?: string): string {
+    if (!email) return "127.0.0.1";
+    const h = createHmac("sha256", config.secret).update(`bucket:${email}`).digest("hex");
+    return `fd${h.slice(0, 2)}:${h.slice(2, 6)}:${h.slice(6, 10)}:${h.slice(10, 14)}::1`;
+  }
+
+  function call(path: string, body: object, cookie?: string, email?: string): Promise<Response> {
+    const headers = new Headers({ "content-type": "application/json", origin: config.baseURL, [CLIENT_HEADER]: bucket(email) });
     if (cookie) headers.set("cookie", cookie);
     return auth.handler(new Request(`${config.baseURL}${BASE_PATH}${path}`, { method: "POST", headers, body: JSON.stringify(body) }));
   }
 
-  // Only the session cookie is passed on; anything else the browser sends is ignored.
-  async function sessionCookie(request: Request): Promise<string | undefined> {
+  // Only session cookies are passed on; anything else the browser sends is ignored.
+  // A browser can hold more than one under the same name (another host on the tailnet
+  // could set one for the whole tailnet domain), so each is tried, a few at most.
+  async function sessionCookies(request: Request): Promise<string[]> {
     const name = (await context).authCookies.sessionToken.name;
-    const value = parseCookies(request.headers.get("cookie")).get(name);
-    return value ? `${name}=${value}` : undefined;
+    return (parseCookies(request.headers.get("cookie")).get(name) ?? []).slice(0, 3).map((v) => `${name}=${v}`);
   }
 
-  async function current(request: Request): Promise<AuthResolution & { token?: string }> {
+  async function current(request: Request): Promise<AuthResolution & { token?: string; cookie?: string }> {
     const headers = new Headers();
-    const cookie = await sessionCookie(request);
-    if (!cookie) return { person: null, headers };
-    const result = await auth.api.getSession({ headers: new Headers({ cookie }), returnHeaders: true });
-    for (const c of result.headers.getSetCookie()) headers.append("Set-Cookie", c);
-    const found = result.response;
-    if (!found || !found.user.emailVerified) return { person: null, headers };
-    return { person: mappedAuthPerson(db, found.user.id, found.user.email), headers, token: found.session.token };
+    for (const cookie of await sessionCookies(request)) {
+      const result = await auth.api.getSession({ headers: new Headers({ cookie }), returnHeaders: true });
+      const found = result.response;
+      if (!found || !found.user.emailVerified) continue;
+      const person = mappedAuthPerson(db, found.user.id, found.user.email);
+      if (!person) continue;
+      for (const c of result.headers.getSetCookie()) headers.append("Set-Cookie", c);
+      return { person, headers, token: found.session.token, cookie };
+    }
+    return { person: null, headers };
   }
 
   async function resolve(request: Request): Promise<AuthResolution> {
@@ -195,13 +210,16 @@ export function createAuthService(
     // A new code replaces any earlier one, with a fresh set of attempts.
     await ctx.internalAdapter.deleteVerificationByIdentifier(identifier);
     codes.delete(email);
-    const res = await call("/email-otp/send-verification-otp", { email, type: "sign-in" });
+    const res = await call("/email-otp/send-verification-otp", { email, type: "sign-in" }, undefined, email);
     const code = codes.get(email);
     codes.delete(email);
     try {
       if (res.status !== 200 || !code) throw new Error(`sign-in code not issued (${res.status})`);
       await dependencies.sendCode(email, code);
-    } catch {
+    } catch (err) {
+      // Safe to log: CodeDeliveryError carries at most Resend's HTTP status, never the
+      // key, the code or Resend's reply; the address isn't logged either.
+      console.error(`Sign-in code not sent: ${err instanceof CodeDeliveryError ? err.message : `library answered ${res.status}`}`);
       // Nobody can use a code that was never delivered.
       await ctx.internalAdapter.deleteVerificationByIdentifier(identifier);
       return page(
@@ -224,7 +242,7 @@ export function createAuthService(
       await (await context).internalAdapter.deleteVerificationByIdentifier(`sign-in-otp-${email}`);
     }
 
-    const res = await call("/sign-in/email-otp", { email, otp: code });
+    const res = await call("/sign-in/email-otp", { email, otp: code }, undefined, email);
     if (res.status === 429) return retry("Too many tries. Wait a minute, then try again.", 429);
     if (res.status !== 200) {
       const reason = ((await res.json().catch(() => ({}))) as { code?: string }).code;
@@ -241,8 +259,7 @@ export function createAuthService(
   }
 
   async function signOut(request: Request, csrf: string): Promise<Response> {
-    const cookie = await sessionCookie(request);
-    const { person, token } = await current(request);
+    const { person, token, cookie } = await current(request);
     if (!cookie || !person || !token) return redirect("/sign-in", []);
     if (!validToken(db, person.id, csrf)) return new Response("Reload the page and try again.", { status: 403, headers: NO_STORE });
     const res = await call("/sign-out", {}, cookie);
@@ -346,14 +363,13 @@ async function readLimited(request: Request, limit: number): Promise<string | nu
   return new TextDecoder().decode(Buffer.concat(chunks));
 }
 
-function parseCookies(header: string | null): Map<string, string> {
-  const out = new Map<string, string>();
+function parseCookies(header: string | null): Map<string, string[]> {
+  const out = new Map<string, string[]>();
   for (const part of (header ?? "").split(";")) {
     const i = part.indexOf("=");
     if (i <= 0) continue;
     const name = part.slice(0, i).trim();
-    // The first occurrence wins, as browsers send the most specific cookie first.
-    if (!out.has(name)) out.set(name, part.slice(i + 1).trim());
+    out.set(name, [...(out.get(name) ?? []), part.slice(i + 1).trim()]);
   }
   return out;
 }

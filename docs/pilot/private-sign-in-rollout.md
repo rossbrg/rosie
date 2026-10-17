@@ -26,6 +26,7 @@ Email mode refuses to start if any of this is missing or loose, if nobody is ena
 
 ## Deploying (later, when Ross says so)
 
+0. **Merge first.** Deploy from `main` after this branch is merged, not from the branch itself. Migrations are tracked by count, not name: if the branch's three migrations reach the VM ahead of `main`, a later migration on `main` would take the same position and be skipped there.
 1. **Check the gap.** On the VM: `cd ~/rosie && git rev-parse HEAD && ~/.bun/bin/bun --version`. The last check found the VM at `ae6266a`; `main` adds the harness work since then (Phase 0 rules, "Tell Rosie" on the subscriptions, the model-call log and its migration, the "done" prompt fix). Review `git log ae6266a..feat/private-sign-in` before deploying. "Tell Rosie" stays off as long as `ROSIE_INTERPRETER` is unset in `.env`; confirm that before restarting.
 2. **Check Bun.** `bun.lock` is in the newer text format (lockfile version 2); Bun 1.3.x ignores it and `bun install --frozen-lockfile` fails (this is already true of `main`). Use a Bun that reads it (1.4.2 on Ross's Mac does) or note the gap before installing. Don't upgrade the VM's Bun without deciding to.
 3. **Back up the database** with SQLite's own copy, which is safe while the service runs: `bun -e 'new (require("bun:sqlite").Database)("data/rosie.sqlite").run("VACUUM INTO ?", ["data/rosie-before-sign-in.sqlite"])'`.
@@ -39,6 +40,15 @@ Email mode refuses to start if any of this is missing or loose, if nobody is ena
 ## Rolling back
 
 Check out the previously recorded commit, set `ROSIE_AUTH_MODE=tailscale` (or remove the line), and restart. The `Tailscale-User-Login` header identifies people again through `people.login`, which this change never touches, so keep Ross's recorded tailnet login in `seed/household.local.json`. Keep the new tables and column: older code ignores them (its migrations stop at its own last version, and inserts into `people` get `auth_enabled`'s default). Restore the backup only if household data itself went wrong.
+
+## Known limits (accepted for a private tailnet)
+
+From the two security reviews; none lets anyone sign in without the emailed code.
+
+- **Someone on the tailnet can be a nuisance.** Rosie can't see real client addresses behind `tailscale serve`, so its limits are per email address and overall. Anyone on the tailnet can use up an address's five codes an hour (each new code replaces Ross's pending one and emails him), or the twenty-an-hour overall budget with made-up addresses. Wrong-code limits are per address, so made-up addresses can't block Ross's sign-in.
+- **Timing shows which address can sign in.** An address that can sign in waits for Resend and, if Resend fails, gets "couldn't send"; others answer at once. The design keeps the useful error.
+- **No daily cap.** Five codes an hour with three tries each is about 360 guesses a day against one address, each costing Ross an email. Add a daily cap or an operator lockout if this ever matters.
+- **Delivery failures** are logged to the journal as `Sign-in code not sent: …` with at most Resend's HTTP status, never the address, key or code.
 
 ## Not in this change
 

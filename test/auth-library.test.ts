@@ -359,4 +359,17 @@ describe("found in review", () => {
     const stored = db.query<{ value: string }, []>("SELECT value FROM auth_verification").get()!.value;
     expect(stored.startsWith(`${bare}:`)).toBe(false);
   });
+
+  test("wrong codes for made-up addresses can't lock Ross out", async () => {
+    await send();
+    for (let i = 0; i < 6; i++) await verify("123456", `stranger${i}@example.com`);
+    expect((await verify(box.last())).status).toBe(303);
+  });
+
+  test("a junk session cookie sent first doesn't hide the real one", async () => {
+    const cookie = await signIn(auth, box);
+    const junk = `${COOKIE}=junk.value`;
+    expect((await auth.resolve(get("/", { Cookie: `${junk}; ${cookie}` }))).person?.id).toBe("ross");
+    expect((await auth.resolve(get("/", { Cookie: `${junk}; ${junk}; ${junk}; ${cookie}` }))).person).toBeNull();
+  });
 });
