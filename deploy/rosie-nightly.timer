@@ -4,7 +4,8 @@
 Description=Run Rosie's maintenance check every night
 
 [Timer]
-OnCalendar=*-*-* 03:00
+# Household time; matches ROSIE_TZ in .env.example. Change both together.
+OnCalendar=*-*-* 03:00 America/New_York
 # Run on boot if the machine was off at 03:00.
 Persistent=true
 
