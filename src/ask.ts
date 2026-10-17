@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import type Anthropic from "@anthropic-ai/sdk";
 import { ActionError, apply, describe, validate, type Action, type RawAction } from "./actions";
 import { nextDue, type Schedule } from "./maintenance";
 
@@ -148,15 +149,7 @@ export function userContent(snap: Snapshot, message: string): string {
   return `<household_snapshot>\n${JSON.stringify(snap, null, 2)}\n</household_snapshot>\n\n<message from="${snap.speaker.id}">\n${message}\n</message>`;
 }
 
-export class InterpretError extends Error {
-  constructor(
-    message: string,
-    // What went wrong underneath, for the request log rather than the page.
-    readonly detail?: string,
-  ) {
-    super(message);
-  }
-}
+export class InterpretError extends Error {}
 
 // Checks the shape even though structured output should guarantee it: the result
 // drives database writes, so a surprise here must fail loudly, not half-apply.
@@ -170,6 +163,40 @@ export function parseInterpretation(text: string): Pick<Interpretation, "reply" 
   const o = out as { reply?: unknown; actions?: unknown };
   if (typeof o.reply !== "string" || !Array.isArray(o.actions)) throw new InterpretError("Rosie's answer was missing its reply or actions");
   return { reply: o.reply, actions: o.actions as RawAction[] };
+}
+
+export const DEFAULT_MODEL = "claude-opus-5-5";
+
+export function claudeInterpreter(opts: { apiKey?: string; model?: string; client?: Anthropic } = {}): Interpreter {
+  let client = opts.client;
+  const model = opts.model ?? DEFAULT_MODEL;
+  return {
+    model,
+    async interpret(snap, message) {
+      // Loaded on first use, so the nightly check never depends on the SDK being installed.
+      client ??= new (await import("@anthropic-ai/sdk")).default({ apiKey: opts.apiKey, timeout: 90_000, maxRetries: 1 });
+      const response = await client.beta.messages.create({
+        model,
+        max_tokens: 4000,
+        // A short, well-specified parsing job; low effort keeps it quick.
+        output_config: { effort: "low", format: { type: "json_schema", schema: OUTPUT_SCHEMA } },
+        // If a safety classifier declines a harmless household message, retry on the
+        // model Anthropic recommends instead of failing.
+        betas: ["server-side-fallback-2026-07-01"],
+        fallbacks: "default",
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: userContent(snap, message) }],
+      });
+      if (response.stop_reason === "refusal") throw new InterpretError("Rosie couldn't take that message. Try rewording it.");
+      if (response.stop_reason === "max_tokens") throw new InterpretError("Rosie's answer was cut off. Try a shorter message.");
+      const text = response.content.flatMap((b) => (b.type === "text" ? [b.text] : [])).join("");
+      return {
+        ...parseInterpretation(text),
+        model: response.model,
+        usage: { input_tokens: response.usage.input_tokens, output_tokens: response.usage.output_tokens },
+      };
+    },
+  };
 }
 
 export interface AskResult {
@@ -213,10 +240,9 @@ export async function ask(
   try {
     result = await interpreter.interpret(snapshot(db, speaker, today), message);
   } catch (err) {
-    const error = err instanceof InterpretError ? err.message : "Rosie couldn't get an answer just now. Try again in a few minutes.";
-    const detail = err instanceof InterpretError ? err.detail : String(err);
+    const error = err instanceof InterpretError ? err.message : "Rosie couldn't reach her model. Try again in a minute.";
     db.run("UPDATE requests SET status = 'error', error = ?, model = ?, finished_at = ? WHERE id = ?", [
-      detail ? `${error} (${detail})` : error,
+      err instanceof InterpretError ? error : `${error} (${String(err)})`,
       interpreter.model,
       now().toISOString(),
       requestId,

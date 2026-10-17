@@ -2,22 +2,19 @@
 //
 //   bun run eval                      all cases, default model
 //   bun run eval --only snooze        cases whose id contains "snooze"
-//   bun run eval --interpreter codex  score Codex instead of Claude (default: ROSIE_INTERPRETER, else claude)
-//   bun run eval --model <name>       try another model on that CLI
+//   bun run eval --model <id>         try another model
 //   bun run eval --repeat 3           run each case 3 times to see how stable it is
 //
 // Each case is scored on the actions Rosie would show for approval, after the same
 // validation the web page uses, so a case passes only if the person would see
-// exactly the right suggestions. Runs through the same signed-in Claude Code / Codex CLIs
-// as the server, so it uses the subscription, not an API key. Results go to evals/results/.
+// exactly the right suggestions. Needs ANTHROPIC_API_KEY. Results go to evals/results/.
 
 import { Database } from "bun:sqlite";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { parseArgs } from "node:util";
 import type { Action } from "../src/actions";
-import { review, snapshot } from "../src/ask";
+import { claudeInterpreter, review, snapshot } from "../src/ask";
 import { migrate } from "../src/db";
-import { interpreterFromEnv } from "../src/llm";
 import { runNightly } from "../src/nightly";
 import { seed } from "../src/seed";
 
@@ -33,13 +30,16 @@ const here = new URL(".", import.meta.url).pathname;
 const { values: args } = parseArgs({
   options: {
     only: { type: "string" },
-    interpreter: { type: "string" },
     model: { type: "string" },
     repeat: { type: "string", default: "1" },
-    // Each case starts a CLI process; keep it gentle on the plan's rate limits.
-    concurrency: { type: "string", default: "3" },
+    concurrency: { type: "string", default: "4" },
   },
 });
+
+if (!process.env.ANTHROPIC_API_KEY) {
+  console.error("Set ANTHROPIC_API_KEY to run the evals.");
+  process.exit(2);
+}
 
 const suite = JSON.parse(readFileSync(`${here}cases.json`, "utf8")) as { today: string; cases: Case[] };
 const today = suite.today;
@@ -80,12 +80,7 @@ function score(c: Case, actions: Record<string, unknown>[], rejected: string[], 
   return problems;
 }
 
-const which = args.interpreter ?? process.env.ROSIE_INTERPRETER ?? "claude";
-const interpreter = interpreterFromEnv({
-  ...process.env,
-  ROSIE_INTERPRETER: which,
-  ...(args.model ? { ROSIE_CLAUDE_MODEL: args.model, ROSIE_CODEX_MODEL: args.model } : {}),
-})!;
+const interpreter = claudeInterpreter({ model: args.model });
 const cases = suite.cases.filter((c) => !args.only || c.id.includes(args.only));
 const runs = cases.flatMap((c) => Array.from({ length: Number(args.repeat) }, () => c));
 

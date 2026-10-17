@@ -1,9 +1,11 @@
 import { Database } from "bun:sqlite";
 import { beforeEach, describe, expect, test } from "bun:test";
+import type Anthropic from "@anthropic-ai/sdk";
 import type { RawAction } from "../src/actions";
 import { ActionError, validate } from "../src/actions";
 import {
   ask,
+  claudeInterpreter,
   decide,
   DecisionError,
   InterpretError,
@@ -13,7 +15,6 @@ import {
   type Snapshot,
 } from "../src/ask";
 import { migrate } from "../src/db";
-import { claudeCli, codexCli, firstThatAnswers, interpreterFromEnv, type RunResult, type Runner } from "../src/llm";
 import { nextDue, type Schedule } from "../src/maintenance";
 import { runNightly } from "../src/nightly";
 import type { Channel } from "../src/notify";
@@ -186,10 +187,10 @@ describe("asking and approving", () => {
 
   test("a model failure is recorded on the request and nothing is proposed", async () => {
     const result = await ask(db, scripted(new Error("ECONNRESET")), "ross", "done", TODAY, now);
-    expect(result.error).toBe("Rosie couldn't get an answer just now. Try again in a few minutes.");
+    expect(result.error).toBe("Rosie couldn't reach her model. Try again in a minute.");
     expect(db.query("SELECT status, error, model FROM requests").get()).toEqual({
       status: "error",
-      error: "Rosie couldn't get an answer just now. Try again in a few minutes. (Error: ECONNRESET)",
+      error: "Rosie couldn't reach her model. Try again in a minute. (Error: ECONNRESET)",
       model: "test-model",
     });
     expect(db.query("SELECT COUNT(*) AS n FROM proposals").get()).toEqual({ n: 0 });
@@ -256,92 +257,35 @@ describe("applying each kind of action", () => {
 });
 
 describe("the model call", () => {
-  const answer = { reply: "Hi", actions: [] };
-
-  // Stands in for the CLI: records the command and replies with canned output.
-  function fakeRun(reply: (cmd: string[]) => RunResult | Promise<RunResult>) {
-    const calls: { cmd: string[]; input: string }[] = [];
-    const run: Runner = async (cmd, input) => {
-      calls.push({ cmd, input });
-      return reply(cmd);
-    };
-    return { run, calls };
+  function fakeClient(response: Partial<Anthropic.Beta.BetaMessage>) {
+    const calls: Record<string, unknown>[] = [];
+    const client = {
+      beta: {
+        messages: {
+          async create(body: Record<string, unknown>) {
+            calls.push(body);
+            return { model: "claude-opus-5-5", usage: { input_tokens: 10, output_tokens: 5 }, ...response };
+          },
+        },
+      },
+    } as unknown as Anthropic;
+    return { client, calls };
   }
 
-  const flag = (cmd: string[], name: string) => cmd[cmd.indexOf(name) + 1];
-
-  test("claude runs with no tools, a JSON schema and the household on stdin", async () => {
-    const { run, calls } = fakeRun(() => ({
-      code: 0,
-      stderr: "",
-      stdout: JSON.stringify({
-        type: "result",
-        subtype: "success",
-        is_error: false,
-        structured_output: answer,
-        modelUsage: {
-          "claude-haiku-5-5": { inputTokens: 100, outputTokens: 5 },
-          "claude-opus-5-5": { inputTokens: 3, outputTokens: 40, cacheCreationInputTokens: 2000 },
-        },
-      }),
-    }));
-    const out = await claudeCli({ run }).interpret(snapshot(db, "ross", TODAY), "hello");
-    expect(out).toEqual({ ...answer, model: "claude:claude-opus-5-5", usage: { input_tokens: 2103, output_tokens: 45 } });
-    const { cmd, input } = calls[0]!;
-    expect(cmd.slice(0, 2)).toEqual(["claude", "-p"]);
-    expect(flag(cmd, "--tools")).toBe("");
-    expect(flag(cmd, "--model")).toBe("opus");
-    expect(JSON.parse(flag(cmd, "--json-schema")!).required).toEqual(["reply", "actions"]);
-    expect(cmd).toContain("--no-session-persistence");
-    expect(input).toContain('<message from="ross">\nhello\n</message>');
-  });
-
-  test("a claude failure, such as a plan limit, becomes a readable error with the detail kept", async () => {
-    const { run } = fakeRun(() => ({
-      code: 1,
-      stderr: "",
-      stdout: JSON.stringify({ type: "result", subtype: "error_during_execution", is_error: true, result: "Claude usage limit reached" }),
-    }));
-    const err = await claudeCli({ run }).interpret(snapshot(db, "ross", TODAY), "hello").catch((e) => e);
-    expect(err).toBeInstanceOf(InterpretError);
-    expect(err.message).toBe("Rosie couldn't get an answer just now. Try again in a few minutes.");
-    expect(err.detail).toContain("Claude usage limit reached");
-  });
-
-  test("codex reads the schema from a file and writes its answer to one", async () => {
-    const { run, calls } = fakeRun(async (cmd) => {
-      await Bun.write(flag(cmd, "--output-last-message")!, JSON.stringify(answer));
-      return { code: 0, stdout: "", stderr: "" };
+  test("asks for structured output with refusal fallbacks and parses the answer", async () => {
+    const { client, calls } = fakeClient({
+      stop_reason: "end_turn",
+      content: [{ type: "text", text: JSON.stringify({ reply: "Hi", actions: [] }), citations: null }],
     });
-    const out = await codexCli({ run, model: "gpt-test" }).interpret(snapshot(db, "ross", TODAY), "hello");
-    expect(out).toEqual({ ...answer, model: "codex:gpt-test" });
-    const { cmd, input } = calls[0]!;
-    expect(cmd.slice(0, 2)).toEqual(["codex", "exec"]);
-    expect(flag(cmd, "--sandbox")).toBe("read-only");
-    expect(cmd).toContain("--ephemeral");
-    expect(cmd.at(-1)).toBe("-");
-    expect(input.startsWith("You are Rosie")).toBe(true);
+    const out = await claudeInterpreter({ client }).interpret(snapshot(db, "ross", TODAY), "hello");
+    expect(out).toEqual({ reply: "Hi", actions: [], model: "claude-opus-5-5", usage: { input_tokens: 10, output_tokens: 5 } });
+    expect(calls[0]).toMatchObject({ model: "claude-opus-5-5", fallbacks: "default", betas: ["server-side-fallback-2026-07-01"] });
+    expect((calls[0]!.output_config as { format: { type: string } }).format.type).toBe("json_schema");
   });
 
-  test("with two CLIs, a failure on the first falls through to the second", async () => {
-    const claude = fakeRun(() => ({ code: 1, stdout: "", stderr: "rate limited" }));
-    const codex = fakeRun(async (cmd) => {
-      await Bun.write(flag(cmd, "--output-last-message")!, JSON.stringify(answer));
-      return { code: 0, stdout: "", stderr: "" };
-    });
-    const both = firstThatAnswers([claudeCli({ run: claude.run }), codexCli({ run: codex.run })]);
-    expect(both.model).toBe("claude:opus → codex:default");
-    expect(await both.interpret(snapshot(db, "ross", TODAY), "hello")).toMatchObject(answer);
-
-    const none = firstThatAnswers([claudeCli({ run: claude.run }), claudeCli({ run: claude.run })]);
-    const err = await none.interpret(snapshot(db, "ross", TODAY), "hello").catch((e) => e);
-    expect(err.detail).toBe("claude: rate limited; claude: rate limited");
-  });
-
-  test("ROSIE_INTERPRETER picks the CLIs, and unset leaves Tell Rosie off", () => {
-    expect(interpreterFromEnv({})).toBeUndefined();
-    expect(interpreterFromEnv({ ROSIE_INTERPRETER: "codex, claude", ROSIE_CLAUDE_MODEL: "sonnet" })!.model).toBe("codex:default → claude:sonnet");
-    expect(() => interpreterFromEnv({ ROSIE_INTERPRETER: "gpt" })).toThrow("unknown");
+  test("a refusal becomes a readable error", async () => {
+    const { client } = fakeClient({ stop_reason: "refusal", content: [] });
+    expect(claudeInterpreter({ client }).interpret(snapshot(db, "ross", TODAY), "hello")).rejects.toThrow(InterpretError);
   });
 
   test("malformed answers are rejected", () => {
