@@ -2,6 +2,10 @@
 
 A harness for managing a household and family: an agent that helps a family notice what matters, decide who owns it, and see that it actually got done. Earlier drafts call it "Home Slice".
 
+## Pilot
+
+- [docs/pilot/maintenance-loop.md](docs/pilot/maintenance-loop.md): first pilot, recurring home maintenance (Oct 2026).
+
 ## Research and design
 
 All in [docs/research](docs/research), newest first:
