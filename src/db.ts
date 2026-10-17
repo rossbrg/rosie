@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 // Each entry runs once, in order. Never edit a shipped migration; add a new one.
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE people (
     id TEXT PRIMARY KEY,
@@ -139,6 +139,43 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   CREATE INDEX model_calls_day ON model_calls (day);
+  `,
+  `
+  -- Who may sign in with an email code. Off unless the private seed turns it on;
+  -- a reminder address alone never lets anyone in.
+  ALTER TABLE people ADD COLUMN auth_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auth_enabled IN (0, 1));
+  `,
+  `
+  -- Email sign-in, in the tables better-auth 1.7.10 generates for its email-code plugin
+  -- (column names and types are the library's; only the table names are Rosie's).
+  -- test/auth-users.test.ts checks the library still finds nothing to add.
+  CREATE TABLE auth_user ("id" text not null primary key, "name" text not null, "email" text not null unique, "emailVerified" integer not null, "image" text, "createdAt" date not null, "updatedAt" date not null);
+  CREATE TABLE auth_session ("id" text not null primary key, "expiresAt" date not null, "token" text not null unique, "createdAt" date not null, "updatedAt" date not null, "ipAddress" text, "userAgent" text, "userId" text not null references "auth_user" ("id") on delete cascade);
+  CREATE TABLE auth_account ("id" text not null primary key, "accountId" text not null, "providerId" text not null, "userId" text not null references "auth_user" ("id") on delete cascade, "accessToken" text, "refreshToken" text, "idToken" text, "accessTokenExpiresAt" date, "refreshTokenExpiresAt" date, "scope" text, "password" text, "createdAt" date not null, "updatedAt" date not null);
+  CREATE TABLE auth_verification ("id" text not null primary key, "identifier" text not null, "value" text not null, "expiresAt" date not null, "createdAt" date not null, "updatedAt" date not null);
+  CREATE TABLE auth_rate_limit ("id" text not null primary key, "key" text not null unique, "count" integer not null, "lastRequest" bigint not null);
+  CREATE INDEX auth_session_userId_idx ON auth_session ("userId");
+  CREATE INDEX auth_account_userId_idx ON auth_account ("userId");
+  CREATE INDEX auth_verification_identifier_idx ON auth_verification ("identifier");
+
+  -- Which household person a sign-in account is. Written only by the trusted bootstrap
+  -- (\`bun run auth:bootstrap\`), never from a request; one account per person and back.
+  CREATE TABLE auth_household_user (
+    user_id TEXT PRIMARY KEY REFERENCES auth_user(id) ON DELETE CASCADE,
+    person_id TEXT NOT NULL UNIQUE REFERENCES people(id)
+  );
+  `,
+  `
+  -- Each request for a sign-in code, known address or not, for the cooldown and the
+  -- hourly limits (src/auth-limits.ts). Addresses are stored hashed; rows older than an
+  -- hour are pruned as new requests arrive.
+  CREATE TABLE auth_code_requests (
+    id INTEGER PRIMARY KEY,
+    email_hash TEXT NOT NULL,
+    requested_at INTEGER NOT NULL         -- milliseconds since the epoch
+  );
+  CREATE INDEX auth_code_requests_email ON auth_code_requests (email_hash, requested_at);
+  CREATE INDEX auth_code_requests_time ON auth_code_requests (requested_at);
   `,
 ];
 

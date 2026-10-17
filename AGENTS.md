@@ -33,7 +33,8 @@ Both must pass before a commit. `bun run eval --interpreter claude-cli` runs the
 | `src/actions.ts` | The changes Rosie can propose: validate, describe, apply |
 | `src/ask.ts` | Tell Rosie: snapshot, prompt, schema, ask (retry, daily cap, call log), decide |
 | `src/llm.ts` | The only code that talks to a model: Claude CLI, Claude direct, Codex CLI, fallbacks, the queue |
-| `src/web.ts`, `src/page.ts` | The page, identity from the Tailscale header, CSRF |
+| `src/web.ts`, `src/page.ts`, `src/csrf.ts` | The page, identity from the Tailscale header, CSRF |
+| `src/auth*.ts` | Optional email-code sign-in: settings, accounts, request limits, code email, sessions, sign-in page |
 | `evals/` | Eval cases, the household fixture and the runner |
 | `docs/research/`, `docs/pilot/` | Research and plans; read before changing the agent layer |
 

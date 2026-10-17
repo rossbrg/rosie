@@ -57,6 +57,8 @@ export function renderHome(
   csrf: string,
   // Set when "Tell Rosie" is configured; `unavailable` says why the box is off for now.
   ask: { now: Date; unavailable?: string | null } | null = null,
+  // With email sign-in, a way to sign out of this browser.
+  signOut = false,
 ): string {
   const open = db
     .query<OpenRow, []>(
@@ -144,7 +146,17 @@ export function renderHome(
 <main>
   <header class="top">
     <div class="brand"><span class="logo" aria-hidden="true">${ICON.home}</span>Rosie</div>
-    <div class="who" title="Signed in as ${esc(me.name)}">${esc(initials(me.name))}</div>
+    <div class="account">
+      ${
+        signOut
+          ? `<form class="signout" method="post" action="/sign-out">
+        <input type="hidden" name="csrf" value="${esc(csrf)}">
+        <button type="submit">Sign out</button>
+      </form>`
+          : ""
+      }
+      <div class="who" title="Signed in as ${esc(me.name)}">${esc(initials(me.name))}</div>
+    </div>
   </header>
 
   <section class="hero">
@@ -336,14 +348,14 @@ export function esc(s: string): string {
   return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]!);
 }
 
-const ICON = {
+export const ICON = {
   check: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>`,
   home: `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11l8-6.5 8 6.5"/><path d="M6 9.8V19a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V9.8"/></svg>`,
 };
 
-const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#c8553d"/><path d="M8 15.5l8-6.5 8 6.5M10.5 14v9h11v-9" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+export const FAVICON = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32"><rect width="32" height="32" rx="8" fill="#c8553d"/><path d="M8 15.5l8-6.5 8 6.5M10.5 14v9h11v-9" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 
-const CSS = `
+export const CSS = `
 :root {
   color-scheme: light dark;
   --bg: #f6f3ee; --surface: #ffffff; --surface-2: #f0ece5; --line: rgba(60, 45, 30, .10);
@@ -379,6 +391,13 @@ main {
   font-weight: 600; letter-spacing: .02em;
 }
 .who { width: 34px; height: 34px; font-size: 13px; }
+.account { display: flex; align-items: center; gap: 6px; }
+.signout { margin: 0; }
+.signout button {
+  cursor: pointer; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted);
+  background: none; border: 0; border-radius: 10px; padding: 8px 8px;
+}
+.signout button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hero { padding: 22px 2px 6px; }
 .date { margin: 0; color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 h1 { margin: 4px 0 6px; font: 700 32px/1.1 ui-rounded, -apple-system, "SF Pro Rounded", system-ui, sans-serif; letter-spacing: -.02em; }

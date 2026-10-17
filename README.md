@@ -4,12 +4,13 @@ A harness for managing a household and family: an agent that helps a family noti
 
 ## Running Rosie
 
-Rosie is a small [Bun](https://bun.sh) service with a SQLite database. Its one runtime dependency is the Anthropic SDK, used only by the direct route for "Tell Rosie".
+Rosie is a small [Bun](https://bun.sh) service with a SQLite database. Its runtime dependencies are the Anthropic SDK, used only by the direct route for "Tell Rosie", and Better Auth, used only for email sign-in.
 
 ```sh
 bun install
 cp .env.example .env              # then fill in what you need
 bun run seed                      # loads seed/household.json (+ seed/household.local.json if present)
+bun run auth:bootstrap            # email sign-in only: make accounts for people with auth_enabled
 bun run nightly                   # plan due maintenance and send reminders; run once a night
 bun run serve                     # web page on 127.0.0.1:8787
 bun test
@@ -34,6 +35,15 @@ tailscale serve --bg 8787
 - Publish the page to the tailnet with `tailscale serve --bg 8787`. Rosie identifies people from the `Tailscale-User-Login` header that `tailscale serve` adds, so it must stay bound to localhost.
 - Point an outside monitor (Uptime Kuma, Healthchecks, Home Assistant) at `/healthz`. It returns 503 when the last good nightly run is older than 36 hours, when a message gave up after 5 tries or has sat unsent for 36 hours, or when a schedule couldn't be planned, so a dead server or a broken channel still gets noticed.
 - Messages wait in the queue until their channel is set up and the person has an address; nothing is marked sent that wasn't. Set `ROSIE_CONSOLE_CHANNELS=1` to print them instead while developing.
+
+## Signing in
+
+By default Rosie knows who is asking from the `Tailscale-User-Login` header. With `ROSIE_AUTH_MODE=email-otp` she ignores that header and asks people to sign in instead: enter your email, get a six-digit code through the same Resend sender, and that browser stays signed in for 30 days. The page is still only reachable on the tailnet.
+
+- Only people with `"auth_enabled": true` in `seed/household.local.json` can sign in. A reminder address alone never lets anyone in, and unknown addresses get the same "a code is on its way" page without any email.
+- Accounts are made only by `bun run auth:bootstrap`, run on the server after seeding. `serve` refuses to start in email mode until every enabled person has one, or if a setting is missing.
+- Codes last five minutes, allow three tries and are replaced when you ask for another. Asking is limited to once a minute and five times an hour per address, and twenty times an hour overall, and the limits survive restarts.
+- Settings and the rollout steps are in [docs/pilot/private-sign-in-rollout.md](docs/pilot/private-sign-in-rollout.md). The code is in `src/auth*.ts`; sign-in uses [Better Auth](https://better-auth.com), pinned to one version.
 
 ## Tell Rosie
 
@@ -77,6 +87,7 @@ Each case goes through the same path as the page, retry included. The summary gi
 
 - [docs/pilot/maintenance-loop.md](docs/pilot/maintenance-loop.md): first pilot, recurring home maintenance (Oct 2026).
 - [docs/pilot/harness-plan.md](docs/pilot/harness-plan.md): proposed plan for the agent layer on the Claude and Codex subscriptions (Oct 17, not started).
+- [docs/pilot/private-sign-in-design.md](docs/pilot/private-sign-in-design.md), [plan](docs/pilot/private-sign-in-plan.md) and [rollout](docs/pilot/private-sign-in-rollout.md): email-code sign-in for Ross, still private behind Tailscale (Oct 17).
 
 ## Research and design
 

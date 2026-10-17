@@ -1,8 +1,9 @@
 import type { Database } from "bun:sqlite";
 import { existsSync, readFileSync } from "node:fs";
+import { enabledAuthPeople } from "./auth-users";
 
 interface SeedFile {
-  people?: { id: string; name: string; login?: string; email?: string; ntfy_topic?: string }[];
+  people?: { id: string; name: string; login?: string; email?: string; ntfy_topic?: string; auth_enabled?: boolean }[];
   items?: { id: string; name: string; brand?: string; model?: string; notes?: string; source_url?: string }[];
   schedules?: {
     id: string;
@@ -40,6 +41,8 @@ function checkDate(value: string, where: string): void {
 // Upserts the seed so it can be re-run after edits. People's logins, emails and
 // push topics live in an untracked `*.local.json` next to the seed and override it.
 // They are only ever filled in, never cleared, so seeding without the local file is safe.
+// `auth_enabled` (may this person sign in with an email code?) works the same way:
+// leaving it out keeps what the database has, and only an explicit true or false changes it.
 export function seed(db: Database, path: string, now: Date): void {
   const base = JSON.parse(readFileSync(path, "utf8")) as SeedFile;
   const localPath = path.replace(/\.json$/, ".local.json");
@@ -48,16 +51,26 @@ export function seed(db: Database, path: string, now: Date): void {
   for (const p of local.people ?? []) people.set(p.id, { ...people.get(p.id), ...p });
   for (const s of base.schedules ?? []) checkDate(s.starts_on, `schedule ${s.id} starts_on`);
   for (const h of base.history ?? []) checkDate(h.completed_on, `history "${h.title}" completed_on`);
+  for (const p of people.values()) {
+    if (p.auth_enabled !== undefined && typeof p.auth_enabled !== "boolean") {
+      throw new Error(`person ${p.id}: auth_enabled must be true or false`);
+    }
+  }
 
   db.transaction(() => {
     for (const p of people.values()) {
+      const authEnabled = p.auth_enabled === undefined ? null : Number(p.auth_enabled);
       db.run(
-        `INSERT INTO people (id, name, login, email, ntfy_topic) VALUES (?, ?, ?, ?, ?)
+        `INSERT INTO people (id, name, login, email, ntfy_topic, auth_enabled) VALUES (?, ?, ?, ?, ?, COALESCE(?, 0))
          ON CONFLICT (id) DO UPDATE SET name = excluded.name, login = COALESCE(excluded.login, people.login),
-           email = COALESCE(excluded.email, people.email), ntfy_topic = COALESCE(excluded.ntfy_topic, people.ntfy_topic)`,
-        [p.id, p.name, p.login ?? null, p.email ?? null, p.ntfy_topic ?? null],
+           email = COALESCE(excluded.email, people.email), ntfy_topic = COALESCE(excluded.ntfy_topic, people.ntfy_topic),
+           auth_enabled = COALESCE(?, people.auth_enabled)`,
+        [p.id, p.name, p.login ?? null, p.email ?? null, p.ntfy_topic ?? null, authEnabled, authEnabled],
       );
     }
+    // Everyone who may sign in needs one address of their own. Throwing here rolls the
+    // whole seed back, so a bad override never half-applies.
+    enabledAuthPeople(db);
     for (const i of base.items ?? []) {
       db.run(
         `INSERT INTO items (id, name, brand, model, notes, source_url) VALUES (?, ?, ?, ?, ?, ?)

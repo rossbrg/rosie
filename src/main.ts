@@ -1,6 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DAILY_CAP } from "./ask";
+import { createAuthService } from "./auth";
+import { AuthConfigError, readAuthConfig } from "./auth-config";
+import { createCodeSender } from "./auth-mail";
+import { AuthSetupError, bootstrapAuthUsers, enabledAuthPeople } from "./auth-users";
 import { openDb } from "./db";
 import { interpreterFromEnv } from "./llm";
 import { runNightly } from "./nightly";
@@ -23,6 +27,16 @@ switch (process.argv[2]) {
     console.log(`Seeded from ${path}`);
     break;
   }
+  case "auth-bootstrap": {
+    // Trusted, local, and the only way sign-in accounts are made or removed: one per
+    // person the private seed enables. Prints counts only.
+    if (loadAuthConfig().mode !== "email-otp") fail("Set ROSIE_AUTH_MODE=email-otp (and its settings) before provisioning sign-in accounts.");
+    // Also runs with nobody enabled, so turning everyone off removes their accounts and sessions.
+    const counts = setup(() => bootstrapAuthUsers(db, new Date()));
+    console.log(`Sign-in accounts: ${counts.created} created, ${counts.updated} updated, ${counts.revoked} revoked`);
+    if (enabledAuthPeople(db).length === 0) console.log('Nobody can sign in now; set "auth_enabled": true in seed/household.local.json to let someone in.');
+    break;
+  }
   case "nightly": {
     const alert = env.ROSIE_ALERT_PERSON;
     if (alert && !db.query("SELECT 1 FROM people WHERE id = ?").get(alert)) {
@@ -41,6 +55,13 @@ switch (process.argv[2]) {
       console.error("ROSIE_DEV_LOGIN is for local development; set ROSIE_DEV=1 to use it.");
       process.exit(1);
     }
+    // Email sign-in refuses to start unless its settings are complete and every
+    // person it lets in has an account (`bun run auth:bootstrap`).
+    const authConfig = loadAuthConfig();
+    const auth =
+      authConfig.mode === "email-otp"
+        ? setup(() => createAuthService(db, authConfig, { sendCode: createCodeSender(authConfig), now: () => new Date() }))
+        : undefined;
     const port = Number(env.PORT ?? 8787);
     // Bind to localhost; `tailscale serve` publishes it to the tailnet with identity headers.
     // "Tell Rosie" runs on the household's subscriptions (ROSIE_INTERPRETER); without it
@@ -53,7 +74,8 @@ switch (process.argv[2]) {
       idleTimeout: 255,
       fetch: createHandler(db, {
         timeZone: env.ROSIE_TZ,
-        devLogin: env.ROSIE_DEV_LOGIN,
+        devLogin: auth ? undefined : env.ROSIE_DEV_LOGIN,
+        auth,
         interpreter,
         ask: {
           dailyCap: Number(env.ROSIE_DAILY_MODEL_CALLS || DAILY_CAP),
@@ -62,10 +84,29 @@ switch (process.argv[2]) {
         },
       }),
     });
-    console.log(`Rosie on http://127.0.0.1:${port}`);
+    console.log(`Rosie on http://127.0.0.1:${port}${auth ? " (email sign-in)" : ""}`);
     break;
   }
   default:
-    console.error("usage: bun src/main.ts migrate | seed [file] | nightly | serve");
+    console.error("usage: bun src/main.ts migrate | seed [file] | auth-bootstrap | nightly | serve");
     process.exit(1);
+}
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
+}
+
+// Configuration and setup problems are the operator's to fix: say what, without a stack.
+function loadAuthConfig() {
+  return setup(() => readAuthConfig(env));
+}
+
+function setup<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (err) {
+    if (err instanceof AuthConfigError || err instanceof AuthSetupError) fail(err.message);
+    throw err;
+  }
 }

@@ -1,14 +1,20 @@
 import type { Database } from "bun:sqlite";
-import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import { ask, askUnavailable, decide, DecisionError, type AskOptions, type Interpreter } from "./ask";
+import { checkOrigin, type AuthService } from "./auth";
+import { renderSignIn } from "./auth-page";
 import { todayIn } from "./dates";
+import { csrfToken, validToken } from "./csrf";
 import { completeOccurrence, CompletionError, health } from "./maintenance";
 import { renderHome } from "./page";
 
 export interface WebOptions {
   timeZone?: string;
   // Local development only: treat requests to localhost without a Tailscale header as this login.
+  // Ignored with `auth`.
   devLogin?: string;
+  // Email-code sign-in. When set, a session is the only way in: the Tailscale header
+  // and `devLogin` identify nobody. Without it, the Tailscale header decides.
+  auth?: AuthService;
   // Reads "Tell Rosie" messages. Without one, the page doesn't offer the box.
   interpreter?: Interpreter;
   // The daily cap and who hears about trouble reaching a model.
@@ -45,13 +51,45 @@ export function createHandler(db: Database, opts: WebOptions = {}) {
       const h = health(db, now());
       return Response.json(h, { status: h.ok ? 200 : 503 });
     }
+    // The library's own routes are never served; sign-in goes through the forms below.
+    if (url.pathname === "/api/auth" || url.pathname.startsWith("/api/auth/")) return new Response("Not found", { status: 404 });
+
+    if (opts.auth) return signedIn(req, url, opts.auth);
 
     const me = caller(req);
     if (!me) return new Response("Not signed in to the household tailnet.", { status: 401 });
+    return household(req, url, me, false);
+  };
 
+  async function signedIn(req: Request, url: URL, auth: AuthService): Promise<Response> {
+    if (url.pathname === "/sign-in/send-code") return auth.submit("send-code", req);
+    if (url.pathname === "/sign-in/verify-code") return auth.submit("verify-code", req);
+    if (url.pathname === "/sign-out") return auth.submit("sign-out", req);
+
+    const { person, headers } = await auth.resolve(req);
+    let res: Response;
+    if (url.pathname === "/sign-in" && req.method === "GET") {
+      res = person
+        ? new Response(null, { status: 303, headers: { Location: "/" } })
+        : new Response(renderSignIn({ step: "email" }), { headers: { "Content-Type": "text/html; charset=utf-8" } });
+    } else if (!person) {
+      res =
+        req.method === "GET" || req.method === "HEAD"
+          ? new Response(null, { status: 303, headers: { Location: "/sign-in" } })
+          : new Response("Sign in first.", { status: 401 });
+    } else {
+      // On top of the CSRF token: household changes must come from Rosie's own address.
+      res = (req.method === "POST" && checkOrigin(req, auth.origin)) || (await household(req, url, person, true));
+    }
+    res.headers.set("Cache-Control", "no-store");
+    for (const c of headers.getSetCookie()) res.headers.append("Set-Cookie", c);
+    return res;
+  }
+
+  async function household(req: Request, url: URL, me: Person, signOut: boolean): Promise<Response> {
     if (req.method === "POST") {
-      // Identity comes from the network, not a cookie, so any page a household member
-      // visits could post here. Require a same-origin request carrying this person's token.
+      // Any page a household member visits could post here. Require a same-origin
+      // request carrying this person's token.
       const site = req.headers.get("Sec-Fetch-Site");
       if (site && site !== "same-origin" && site !== "none") return new Response("Cross-site request refused.", { status: 403 });
       const form = await req.formData();
@@ -95,13 +133,13 @@ export function createHandler(db: Database, opts: WebOptions = {}) {
     if (url.pathname === "/" && req.method === "GET") {
       const today = todayIn(opts.timeZone, now());
       const askState = opts.interpreter ? { now: now(), unavailable: askUnavailable(db, today, opts.ask) } : null;
-      return new Response(renderHome(db, me, today, csrfToken(db, me.id), askState), {
+      return new Response(renderHome(db, me, today, csrfToken(db, me.id), askState, signOut), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
 
     return new Response("Not found", { status: 404 });
-  };
+  }
 }
 
 // Back to the page after a form post. Relative, because Rosie only sees plain HTTP
@@ -110,19 +148,4 @@ function home(anchor = ""): Response {
   return new Response(null, { status: 303, headers: { Location: `/${anchor}` } });
 }
 
-function csrfSecret(db: Database): string {
-  db.run("INSERT INTO settings (key, value) VALUES ('csrf_secret', ?) ON CONFLICT (key) DO NOTHING", [
-    randomBytes(32).toString("hex"),
-  ]);
-  return db.query<{ value: string }, []>("SELECT value FROM settings WHERE key = 'csrf_secret'").get()!.value;
-}
-
-export function csrfToken(db: Database, personId: string): string {
-  return createHmac("sha256", csrfSecret(db)).update(personId).digest("hex");
-}
-
-function validToken(db: Database, personId: string, token: string): boolean {
-  const want = Buffer.from(csrfToken(db, personId));
-  const got = Buffer.from(token);
-  return got.length === want.length && timingSafeEqual(got, want);
-}
+export { csrfToken };
