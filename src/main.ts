@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
-import { claudeInterpreter } from "./ask";
+import { claudeInterpreter } from "./llm";
 import { openDb } from "./db";
 import { runNightly } from "./nightly";
 import { channelsFromEnv } from "./notify";
