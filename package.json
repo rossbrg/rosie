@@ -1,0 +1,17 @@
+{
+  "name": "rosie",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "migrate": "bun src/main.ts migrate",
+    "seed": "bun src/main.ts seed",
+    "nightly": "bun src/main.ts nightly",
+    "serve": "bun src/main.ts serve",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.4.3",
+    "typescript": "^7.0.2"
+  }
+}

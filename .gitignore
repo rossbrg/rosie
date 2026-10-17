@@ -1,2 +1,8 @@
 .DS_Store
 .claude/settings.local.json
+node_modules/
+data/
+*.sqlite
+*.sqlite-*
+.env
+seed/*.local.json

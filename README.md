@@ -2,6 +2,32 @@
 
 A harness for managing a household and family: an agent that helps a family notice what matters, decide who owns it, and see that it actually got done. Earlier drafts call it "Home Slice".
 
+## Running Rosie
+
+Rosie is a small [Bun](https://bun.sh) service with a SQLite database and no runtime dependencies.
+
+```sh
+bun install
+cp .env.example .env              # then fill in what you need
+bun run seed                      # loads seed/household.json (+ seed/household.local.json if present)
+bun run nightly                   # plan due maintenance and send reminders; run once a night
+bun run serve                     # web page on 127.0.0.1:8787
+bun test
+```
+
+People's Tailscale logins, emails and ntfy push topics go in `seed/household.local.json`, which is git-ignored:
+
+```json
+{ "people": [{ "id": "ross", "login": "you@example.com", "email": "you@example.com", "ntfy_topic": "rosie-ross-<random>" }] }
+```
+
+On the home server:
+
+- Run `bun run nightly` from a systemd timer or cron at night.
+- Publish the page to the tailnet with `tailscale serve --bg 8787`. Rosie identifies people from the `Tailscale-User-Login` header that `tailscale serve` adds, so it must stay bound to localhost.
+- Point an outside monitor (Uptime Kuma, Healthchecks, Home Assistant) at `/healthz`. It returns 503 when the last good nightly run is older than 36 hours, so a dead server still gets noticed.
+- Without `RESEND_API_KEY` or `NTFY_URL`, messages print to the console instead of sending.
+
 ## Pilot
 
 - [docs/pilot/maintenance-loop.md](docs/pilot/maintenance-loop.md): first pilot, recurring home maintenance (Oct 2026).

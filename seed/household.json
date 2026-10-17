@@ -1,0 +1,69 @@
+{
+  "people": [
+    { "id": "ross", "name": "Ross" },
+    { "id": "carly", "name": "Carly" }
+  ],
+  "items": [
+    {
+      "id": "mini-split",
+      "name": "Mitsubishi mini-split system (3 indoor heads)",
+      "brand": "Mitsubishi Electric",
+      "model": "2 × MSZ-GE09NA-9; 1 × MSZ-GE12NA-9",
+      "notes": "Optional anti-allergy inserts MAC-408FT-E (2-pack per head, 3 packs total). Washable main screens U01A01100.",
+      "source_url": "https://app.notion.com/p/3ac3845658d781b0bd4ad2c935dceb36"
+    },
+    {
+      "id": "dehumidifier",
+      "name": "Midea 50-pint dehumidifier with pump",
+      "brand": "Midea",
+      "source_url": "https://app.notion.com/p/2e53845658d780169d29ed11c20c95ad"
+    }
+  ],
+  "schedules": [
+    {
+      "id": "mini-split-inserts-vacuum",
+      "item_id": "mini-split",
+      "title": "Vacuum mini-split allergy inserts",
+      "interval_days": 91,
+      "lead_days": 7,
+      "owner_id": "ross",
+      "starts_on": "2026-10-24",
+      "checklist": "- Vacuum the MAC-408FT-E inserts in all 3 heads\n- If vacuuming isn't enough, rinse, press in a towel and dry fully in the shade\n- While the covers are open, check the washable main screens"
+    },
+    {
+      "id": "mini-split-inserts-replace",
+      "item_id": "mini-split",
+      "title": "Replace mini-split allergy inserts",
+      "interval_days": 365,
+      "lead_days": 21,
+      "owner_id": "ross",
+      "starts_on": "2027-07-29",
+      "checklist": "- Order 3 packs of MAC-408FT-E (one per head)\n- Swap the inserts in all 3 heads"
+    },
+    {
+      "id": "dehumidifier-filter",
+      "item_id": "dehumidifier",
+      "title": "Clean dehumidifier air filter",
+      "interval_days": 30,
+      "owner_id": null,
+      "starts_on": "2026-02-09",
+      "active": false,
+      "checklist": "- Pull out the filter, lightly vacuum and shake it outside"
+    }
+  ],
+  "history": [
+    {
+      "item_id": "dehumidifier",
+      "schedule_id": "dehumidifier-filter",
+      "title": "Clean dehumidifier air filter",
+      "completed_on": "2026-01-10",
+      "source_url": "https://app.notion.com/p/2e83845658d780989139c5f60808d4a2"
+    },
+    {
+      "item_id": "dehumidifier",
+      "title": "Clean dehumidifier water tank",
+      "completed_on": "2026-01-10",
+      "source_url": "https://app.notion.com/p/2e53845658d780b28fabfffda2769dad"
+    }
+  ]
+}
