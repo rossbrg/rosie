@@ -1,7 +1,7 @@
 import { Database } from "bun:sqlite";
 
 // Each entry runs once, in order. Never edit a shipped migration; add a new one.
-const MIGRATIONS: string[] = [
+export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE people (
     id TEXT PRIMARY KEY,
@@ -139,6 +139,11 @@ const MIGRATIONS: string[] = [
     created_at TEXT NOT NULL
   );
   CREATE INDEX model_calls_day ON model_calls (day);
+  `,
+  `
+  -- Who may sign in with an email code. Off unless the private seed turns it on;
+  -- a reminder address alone never lets anyone in.
+  ALTER TABLE people ADD COLUMN auth_enabled INTEGER NOT NULL DEFAULT 0 CHECK (auth_enabled IN (0, 1));
   `,
 ];
 
