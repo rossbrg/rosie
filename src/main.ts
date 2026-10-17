@@ -1,7 +1,9 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DAILY_CAP } from "./ask";
+import { createAuthService } from "./auth";
 import { AuthConfigError, readAuthConfig } from "./auth-config";
+import { createCodeSender } from "./auth-mail";
 import { AuthSetupError, bootstrapAuthUsers, enabledAuthPeople } from "./auth-users";
 import { openDb } from "./db";
 import { interpreterFromEnv } from "./llm";
@@ -28,7 +30,7 @@ switch (process.argv[2]) {
   case "auth-bootstrap": {
     // Trusted, local, and the only way sign-in accounts are made: one per person the
     // private seed enables. Prints counts only.
-    if (authConfig().mode !== "email-otp") fail("Set ROSIE_AUTH_MODE=email-otp (and its settings) before provisioning sign-in accounts.");
+    if (loadAuthConfig().mode !== "email-otp") fail("Set ROSIE_AUTH_MODE=email-otp (and its settings) before provisioning sign-in accounts.");
     if (setup(() => enabledAuthPeople(db)).length === 0) {
       fail('Nobody can sign in yet: set "auth_enabled": true for someone in seed/household.local.json, then `bun run seed`.');
     }
@@ -54,6 +56,13 @@ switch (process.argv[2]) {
       console.error("ROSIE_DEV_LOGIN is for local development; set ROSIE_DEV=1 to use it.");
       process.exit(1);
     }
+    // Email sign-in refuses to start unless its settings are complete and every
+    // person it lets in has an account (`bun run auth:bootstrap`).
+    const authConfig = loadAuthConfig();
+    const auth =
+      authConfig.mode === "email-otp"
+        ? setup(() => createAuthService(db, authConfig, { sendCode: createCodeSender(authConfig), now: () => new Date() }))
+        : undefined;
     const port = Number(env.PORT ?? 8787);
     // Bind to localhost; `tailscale serve` publishes it to the tailnet with identity headers.
     // "Tell Rosie" runs on the household's subscriptions (ROSIE_INTERPRETER); without it
@@ -66,7 +75,8 @@ switch (process.argv[2]) {
       idleTimeout: 255,
       fetch: createHandler(db, {
         timeZone: env.ROSIE_TZ,
-        devLogin: env.ROSIE_DEV_LOGIN,
+        devLogin: auth ? undefined : env.ROSIE_DEV_LOGIN,
+        auth,
         interpreter,
         ask: {
           dailyCap: Number(env.ROSIE_DAILY_MODEL_CALLS || DAILY_CAP),
@@ -75,7 +85,7 @@ switch (process.argv[2]) {
         },
       }),
     });
-    console.log(`Rosie on http://127.0.0.1:${port}`);
+    console.log(`Rosie on http://127.0.0.1:${port}${auth ? " (email sign-in)" : ""}`);
     break;
   }
   default:
@@ -89,7 +99,7 @@ function fail(message: string): never {
 }
 
 // Configuration and setup problems are the operator's to fix: say what, without a stack.
-function authConfig() {
+function loadAuthConfig() {
   return setup(() => readAuthConfig(env));
 }
 

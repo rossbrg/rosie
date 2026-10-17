@@ -117,6 +117,4 @@ const SIGN_IN_CSS = `
   background: none; border: 0; padding: 8px 0; text-decoration: none;
 }
 .link:disabled { color: var(--muted); cursor: default; }
-.signout { margin: 0; }
-.signout button { cursor: pointer; font: inherit; font-size: 13px; font-weight: 600; color: var(--muted); background: none; border: 0; padding: 6px 4px; }
 `;

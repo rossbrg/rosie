@@ -57,6 +57,8 @@ export function renderHome(
   csrf: string,
   // Set when "Tell Rosie" is configured; `unavailable` says why the box is off for now.
   ask: { now: Date; unavailable?: string | null } | null = null,
+  // With email sign-in, a way to sign out of this browser.
+  signOut = false,
 ): string {
   const open = db
     .query<OpenRow, []>(
@@ -144,7 +146,17 @@ export function renderHome(
 <main>
   <header class="top">
     <div class="brand"><span class="logo" aria-hidden="true">${ICON.home}</span>Rosie</div>
-    <div class="who" title="Signed in as ${esc(me.name)}">${esc(initials(me.name))}</div>
+    <div class="account">
+      ${
+        signOut
+          ? `<form class="signout" method="post" action="/sign-out">
+        <input type="hidden" name="csrf" value="${esc(csrf)}">
+        <button type="submit">Sign out</button>
+      </form>`
+          : ""
+      }
+      <div class="who" title="Signed in as ${esc(me.name)}">${esc(initials(me.name))}</div>
+    </div>
   </header>
 
   <section class="hero">
@@ -379,6 +391,13 @@ main {
   font-weight: 600; letter-spacing: .02em;
 }
 .who { width: 34px; height: 34px; font-size: 13px; }
+.account { display: flex; align-items: center; gap: 6px; }
+.signout { margin: 0; }
+.signout button {
+  cursor: pointer; font: inherit; font-size: 14px; font-weight: 600; color: var(--muted);
+  background: none; border: 0; border-radius: 10px; padding: 8px 8px;
+}
+.signout button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .hero { padding: 22px 2px 6px; }
 .date { margin: 0; color: var(--muted); font-size: 13px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; }
 h1 { margin: 4px 0 6px; font: 700 32px/1.1 ui-rounded, -apple-system, "SF Pro Rounded", system-ui, sans-serif; letter-spacing: -.02em; }

@@ -24,6 +24,8 @@ export interface AuthResolution {
 }
 
 export interface AuthService {
+  // Rosie's own address (BETTER_AUTH_URL): the only Origin a change may come from.
+  origin: string;
   resolve(request: Request): Promise<AuthResolution>;
   submit(action: AuthAction, request: Request): Promise<Response>;
 }
@@ -228,6 +230,7 @@ export function createAuthService(
   }
 
   return {
+    origin: config.baseURL,
     resolve,
     async submit(action, request) {
       const refused = checkOrigin(request, config.baseURL);
