@@ -41,26 +41,26 @@
       "checklist": "- Order 3 packs of MAC-408FT-E (one per head)\n- Swap the inserts in all 3 heads"
     },
     {
-      "id": "dehumidifier-filter",
+      "id": "dehumidifier-tank",
       "item_id": "dehumidifier",
-      "title": "Clean dehumidifier air filter",
+      "title": "Clean dehumidifier water tank",
       "interval_days": 30,
       "owner_id": null,
       "starts_on": "2026-02-09",
       "active": false,
-      "checklist": "- Pull out the filter, lightly vacuum and shake it outside"
+      "checklist": "- Empty the tank, wash it with mild soap and let it dry before refitting"
     }
   ],
   "history": [
     {
       "item_id": "dehumidifier",
-      "schedule_id": "dehumidifier-filter",
       "title": "Clean dehumidifier air filter",
       "completed_on": "2026-01-10",
       "source_url": "https://app.notion.com/p/2e83845658d780989139c5f60808d4a2"
     },
     {
       "item_id": "dehumidifier",
+      "schedule_id": "dehumidifier-tank",
       "title": "Clean dehumidifier water tank",
       "completed_on": "2026-01-10",
       "source_url": "https://app.notion.com/p/2e53845658d780b28fabfffda2769dad"

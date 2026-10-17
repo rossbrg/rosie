@@ -1,6 +1,7 @@
 import { Database } from "bun:sqlite";
 
 // Each entry runs once, in order. Never edit a shipped migration; add a new one.
+// (Migration 1 has not shipped to a household database yet.)
 const MIGRATIONS: string[] = [
   `
   CREATE TABLE people (
@@ -39,7 +40,7 @@ const MIGRATIONS: string[] = [
     occurrence_key TEXT NOT NULL UNIQUE,  -- schedule id + completion basis + due date; makes creation idempotent
     due_on TEXT NOT NULL,
     owner_id TEXT REFERENCES people(id),
-    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done')),
+    status TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open', 'done', 'cancelled')),
     created_at TEXT NOT NULL,
     overdue_alerted_at TEXT
   );
@@ -59,7 +60,7 @@ const MIGRATIONS: string[] = [
 
   CREATE TABLE runs (
     id INTEGER PRIMARY KEY,
-    kind TEXT NOT NULL,
+    kind TEXT NOT NULL,           -- 'nightly' or 'completion'
     started_at TEXT NOT NULL,
     finished_at TEXT,
     status TEXT NOT NULL CHECK (status IN ('running', 'ok', 'error')),
@@ -71,20 +72,29 @@ const MIGRATIONS: string[] = [
     id INTEGER PRIMARY KEY,
     dedupe_key TEXT NOT NULL UNIQUE,      -- one row per message per channel, ever
     person_id TEXT NOT NULL REFERENCES people(id),
+    occurrence_id INTEGER REFERENCES occurrences(id),  -- reminders about a task; cancelled when it closes
     channel TEXT NOT NULL CHECK (channel IN ('email', 'push')),
     subject TEXT NOT NULL,
     body TEXT NOT NULL,
     created_at TEXT NOT NULL,
     sent_at TEXT,
+    claimed_at TEXT,                      -- set while one process is sending it
+    cancelled_at TEXT,
     attempts INTEGER NOT NULL DEFAULT 0,
     last_error TEXT
+  );
+
+  CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
   );
   `,
 ];
 
 export function openDb(path: string): Database {
   const db = new Database(path, { create: true, strict: true });
-  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON;");
+  // `serve` and `nightly` are separate processes on one file; wait for the other's write.
+  db.exec("PRAGMA journal_mode = WAL; PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000;");
   migrate(db);
   return db;
 }

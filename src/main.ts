@@ -22,6 +22,11 @@ switch (process.argv[2]) {
     break;
   }
   case "nightly": {
+    const alert = env.ROSIE_ALERT_PERSON;
+    if (alert && !db.query("SELECT 1 FROM people WHERE id = ?").get(alert)) {
+      // Still runs (planning doesn't depend on it), but say so loudly.
+      console.error(`ROSIE_ALERT_PERSON "${alert}" doesn't match a person id; missed-run alerts can't be sent.`);
+    }
     const summary = await runNightly(db, channelsFromEnv(env), new Date(), {
       timeZone: env.ROSIE_TZ,
       alertPersonId: env.ROSIE_ALERT_PERSON,
@@ -30,6 +35,10 @@ switch (process.argv[2]) {
     break;
   }
   case "serve": {
+    if (env.ROSIE_DEV_LOGIN && env.ROSIE_DEV !== "1") {
+      console.error("ROSIE_DEV_LOGIN is for local development; set ROSIE_DEV=1 to use it.");
+      process.exit(1);
+    }
     const port = Number(env.PORT ?? 8787);
     // Bind to localhost; `tailscale serve` publishes it to the tailnet with identity headers.
     Bun.serve({ hostname: "127.0.0.1", port, fetch: createHandler(db, { timeZone: env.ROSIE_TZ, devLogin: env.ROSIE_DEV_LOGIN }) });
