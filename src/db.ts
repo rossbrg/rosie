@@ -165,6 +165,18 @@ export const MIGRATIONS: readonly string[] = [
     person_id TEXT NOT NULL UNIQUE REFERENCES people(id)
   );
   `,
+  `
+  -- Each request for a sign-in code, known address or not, for the cooldown and the
+  -- hourly limits (src/auth-limits.ts). Addresses are stored hashed; rows older than an
+  -- hour are pruned as new requests arrive.
+  CREATE TABLE auth_code_requests (
+    id INTEGER PRIMARY KEY,
+    email_hash TEXT NOT NULL,
+    requested_at INTEGER NOT NULL         -- milliseconds since the epoch
+  );
+  CREATE INDEX auth_code_requests_email ON auth_code_requests (email_hash, requested_at);
+  CREATE INDEX auth_code_requests_time ON auth_code_requests (requested_at);
+  `,
 ];
 
 export function openDb(path: string): Database {
