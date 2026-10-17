@@ -5,7 +5,6 @@ import type { RawAction } from "../src/actions";
 import { ActionError, validate } from "../src/actions";
 import {
   ask,
-  claudeInterpreter,
   decide,
   DecisionError,
   InterpretError,
@@ -18,6 +17,7 @@ import { migrate } from "../src/db";
 import { nextDue, type Schedule } from "../src/maintenance";
 import { runNightly } from "../src/nightly";
 import type { Channel } from "../src/notify";
+import { claudeInterpreter } from "../src/llm";
 import { createHandler, csrfToken } from "../src/web";
 
 const TZ = "UTC";
