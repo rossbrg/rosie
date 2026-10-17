@@ -57,7 +57,7 @@ Each phase is useful on its own and ends with tests and the eval set green. Noth
 **Phase 1: Tell Rosie on the subscriptions**
 - Build the Claude interpreter both ways (revive the parked CLI version from commit `d55574a` with the lockdown above, and a direct-call version), with the one-at-a-time queue and the daily cap. Keep the faster, more reliable one; Codex follows the same pattern as the fallback.
 - Add the model-call log table and a `bun run eval --interpreter ...` that runs the 28 cases through any interpreter, on Ross's Mac or the VM.
-- Make approval atomic with a version check, so a double tap or a stale page can't apply twice. (Being fixed in the "Harness plan visualizations" thread; check its merged PR first.)
+- Make approval atomic with a version check, so a double tap or a stale page can't apply twice. (Done in PR #9: the check, the write and the decision happen in one transaction, and a proposal can leave "proposed" only once, which is the version check.)
 - Feed validation failures back for one retry.
 - Exit check: the eval set passes on Claude, and we know Codex's score, which route we're keeping, and how long each call takes on the VM.
 

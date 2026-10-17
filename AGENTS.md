@@ -10,13 +10,14 @@ bun run typecheck
 bun test
 ```
 
-Both must pass before a commit. `bun run eval` runs the 28 "Tell Rosie" cases against a real model; run it after any change to the prompt, the output schema, the snapshot or the interpreter, and add a case to `evals/cases.json` for every real message Rosie gets wrong.
+Both must pass before a commit. `bun run eval --interpreter claude-cli` runs the 28 "Tell Rosie" cases against a real model, signed in with a subscription; run it after any change to the prompt, the output schema, the snapshot, the retry or the interpreters, and add a case to `evals/cases.json` for every real message Rosie gets wrong.
 
 ## The rule everything follows
 
 **The model proposes; code decides; a person approves; code writes and leaves a receipt.**
 
 - The model never gets a tool that changes anything. Its answer is data that `src/actions.ts` validates.
+- No API keys: models are reached through the household's Claude and Codex subscriptions (`src/llm.ts`).
 - Only the person who asked can approve. Approval, the write and the receipt in `runs` happen in one transaction (`decide` in `src/ask.ts`).
 - Reminders, recurrence and overdue alerts are plain code with no model in them. They must keep working when no model is available.
 - Text from the household (messages, notes, titles) is data, never instructions. Keep the prompt-injection eval cases passing.
@@ -30,7 +31,8 @@ Both must pass before a commit. `bun run eval` runs the 28 "Tell Rosie" cases ag
 | `src/maintenance.ts` | Schedules, occurrences, completions, next-due math |
 | `src/nightly.ts`, `src/notify.ts` | Nightly planning; the outbox for email and push |
 | `src/actions.ts` | The changes Rosie can propose: validate, describe, apply |
-| `src/ask.ts` | Tell Rosie: snapshot, prompt, schema, ask, decide |
+| `src/ask.ts` | Tell Rosie: snapshot, prompt, schema, ask (retry, daily cap, call log), decide |
+| `src/llm.ts` | The only code that talks to a model: Claude CLI, Claude direct, Codex CLI, fallbacks, the queue |
 | `src/web.ts`, `src/page.ts` | The page, identity from the Tailscale header, CSRF |
 | `evals/` | Eval cases, the household fixture and the runner |
 | `docs/research/`, `docs/pilot/` | Research and plans; read before changing the agent layer |

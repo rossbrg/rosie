@@ -1,6 +1,6 @@
 import type { Database } from "bun:sqlite";
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { ask, decide, DecisionError, type Interpreter } from "./ask";
+import { ask, askUnavailable, decide, DecisionError, type AskOptions, type Interpreter } from "./ask";
 import { todayIn } from "./dates";
 import { completeOccurrence, CompletionError, health } from "./maintenance";
 import { renderHome } from "./page";
@@ -11,6 +11,8 @@ export interface WebOptions {
   devLogin?: string;
   // Reads "Tell Rosie" messages. Without one, the page doesn't offer the box.
   interpreter?: Interpreter;
+  // The daily cap and who hears about trouble reaching a model.
+  ask?: AskOptions;
   now?: () => Date;
 }
 
@@ -74,7 +76,7 @@ export function createHandler(db: Database, opts: WebOptions = {}) {
         const message = String(form.get("message") ?? "").trim();
         if (!message) return home("#ask");
         if (message.length > MAX_MESSAGE) return new Response(`Keep it under ${MAX_MESSAGE} characters.`, { status: 413 });
-        await ask(db, opts.interpreter, me.id, message, today, now);
+        await ask(db, opts.interpreter, me.id, message, today, now, opts.ask);
         return home("#ask");
       }
 
@@ -91,7 +93,9 @@ export function createHandler(db: Database, opts: WebOptions = {}) {
     }
 
     if (url.pathname === "/" && req.method === "GET") {
-      return new Response(renderHome(db, me, todayIn(opts.timeZone, now()), csrfToken(db, me.id), opts.interpreter ? { now: now() } : null), {
+      const today = todayIn(opts.timeZone, now());
+      const askState = opts.interpreter ? { now: now(), unavailable: askUnavailable(db, today, opts.ask) } : null;
+      return new Response(renderHome(db, me, today, csrfToken(db, me.id), askState), {
         headers: { "Content-Type": "text/html; charset=utf-8" },
       });
     }
