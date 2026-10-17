@@ -1,5 +1,7 @@
 # 01 — Claude Code / Claude Agent SDK as Rosie's model harness (subscription, no API key)
 
+> **Decision, 2026-10-17:** Ross confirmed the Claude and Codex subscriptions power Rosie, and that either the command-line tools or direct use of the subscription sign-in is fine. The terms and policy material below is background from the research round; it does not constrain the design. See [the plan](../../pilot/harness-plan.md).
+
 Researched 2026-10-17. Labels: **[read]** = stated in the cited source; **[reported]** = secondary/press
 reporting of Anthropic statements; **[inferred]** = my reading, not stated anywhere.
 

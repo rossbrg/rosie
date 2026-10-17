@@ -56,7 +56,7 @@ With `ANTHROPIC_API_KEY` set, the page has a box where either of you can write w
 
 All in [docs/research](docs/research), newest first:
 
-- [harness-research.md](docs/research/harness-research.md) (Oct 17): how Claude Code, Codex, OpenClaw, pi, Letta, the OpenAI Agents SDK and Home Assistant's LLM API work, what the subscription terms allow, Ross's Coding-page links, and four home apps. Detailed notes in [harness-round/](docs/research/harness-round/).
+- [harness-research.md](docs/research/harness-research.md) (Oct 17): how Claude Code, Codex, OpenClaw, pi, Letta, the OpenAI Agents SDK and Home Assistant's LLM API work, how to run on the Claude and Codex subscriptions, Ross's Coding-page links, and four home apps. Detailed notes in [harness-round/](docs/research/harness-round/).
 - [home-slice-family-harness-synthesis.md](docs/research/home-slice-family-harness-synthesis.md) (Sept 27, 2026): the family-harness direction, 30-day pilot, open decisions. Start here.
 - [family-display-owner-reports.md](docs/research/family-display-owner-reports.md) (Sept 27): what parents report about Hearth, Skylight, DAKboard, Cozyla, FamilyWall and Cozi.
 - [family-hub-study.md](docs/research/family-hub-study.md) (Sept 22): Waffled, Family Home Hub and Yuvomi as native-app foundations.
