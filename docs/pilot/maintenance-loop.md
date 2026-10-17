@@ -65,7 +65,12 @@ Approval: creating an occurrence and recording a completion are low-risk, revers
 5. **Acceptance tests** (from the synthesis fixtures): a duplicate nightly run creates no second occurrence; a late completion moves the next due date from the completion; a failed write retries without duplicating; a skipped night raises the alert.
 6. **Live for 30 days**, then review: did the work get done, by whom, any duplicates or misses, and was the web page enough or does the iOS app need to come sooner.
 
-## Open questions
+## Decisions
 
-- Who owns the mini-split schedule, Ross or Carly?
-- Where should the alert go (email, phone push, Home Assistant notification)?
+- Ross owns the mini-split schedules (2026-10-17).
+- Reminders and alerts go by email (Resend) and phone push (ntfy) (2026-10-17).
+
+## Still to confirm
+
+- First due date for the 3-month vacuum is set to 2026-10-24 and the yearly replacement to 2027-07-29, a year after the filter prices were checked. Both are guesses; change `starts_on` in the seed if you know better.
+- The dehumidifier schedule is imported but inactive until it has an owner and interval.
