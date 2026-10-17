@@ -5,6 +5,7 @@
   "scripts": {
     "migrate": "bun src/main.ts migrate",
     "seed": "bun src/main.ts seed",
+    "auth:bootstrap": "bun src/main.ts auth-bootstrap",
     "nightly": "bun src/main.ts nightly",
     "serve": "bun src/main.ts serve",
     "test": "bun test",
@@ -16,6 +17,7 @@
     "typescript": "^7.0.2"
   },
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.135.0"
+    "@anthropic-ai/sdk": "^0.135.0",
+    "better-auth": "1.7.10"
   }
 }

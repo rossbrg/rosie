@@ -1,6 +1,8 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DAILY_CAP } from "./ask";
+import { AuthConfigError, readAuthConfig } from "./auth-config";
+import { AuthSetupError, bootstrapAuthUsers, enabledAuthPeople } from "./auth-users";
 import { openDb } from "./db";
 import { interpreterFromEnv } from "./llm";
 import { runNightly } from "./nightly";
@@ -21,6 +23,17 @@ switch (process.argv[2]) {
     const path = process.argv[3] ?? "seed/household.json";
     seed(db, path, new Date());
     console.log(`Seeded from ${path}`);
+    break;
+  }
+  case "auth-bootstrap": {
+    // Trusted, local, and the only way sign-in accounts are made: one per person the
+    // private seed enables. Prints counts only.
+    if (authConfig().mode !== "email-otp") fail("Set ROSIE_AUTH_MODE=email-otp (and its settings) before provisioning sign-in accounts.");
+    if (setup(() => enabledAuthPeople(db)).length === 0) {
+      fail('Nobody can sign in yet: set "auth_enabled": true for someone in seed/household.local.json, then `bun run seed`.');
+    }
+    const counts = setup(() => bootstrapAuthUsers(db, new Date()));
+    console.log(`Sign-in accounts: ${counts.created} created, ${counts.updated} updated, ${counts.revoked} revoked`);
     break;
   }
   case "nightly": {
@@ -66,6 +79,25 @@ switch (process.argv[2]) {
     break;
   }
   default:
-    console.error("usage: bun src/main.ts migrate | seed [file] | nightly | serve");
+    console.error("usage: bun src/main.ts migrate | seed [file] | auth-bootstrap | nightly | serve");
     process.exit(1);
+}
+
+function fail(message: string): never {
+  console.error(message);
+  process.exit(1);
+}
+
+// Configuration and setup problems are the operator's to fix: say what, without a stack.
+function authConfig() {
+  return setup(() => readAuthConfig(env));
+}
+
+function setup<T>(run: () => T): T {
+  try {
+    return run();
+  } catch (err) {
+    if (err instanceof AuthConfigError || err instanceof AuthSetupError) fail(err.message);
+    throw err;
+  }
 }
