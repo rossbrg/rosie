@@ -155,6 +155,26 @@ describe("asking and approving", () => {
     expect(db.query("SELECT status FROM proposals").get()).toEqual({ status: "applied" });
   });
 
+  test("if the proposal can't be marked applied, the change is rolled back with it", async () => {
+    await ask(db, scripted({ reply: "OK", actions: [raw({ type: "complete", task_id: task().id })] }), "ross", "done", TODAY, now);
+    const proposal = db.query<{ id: number }, []>("SELECT id FROM proposals").get()!.id;
+    const receipts = () => db.query<{ n: number }, []>("SELECT count(*) AS n FROM runs").get()!.n;
+    const before = receipts();
+    // Stands in for a crash between writing the change and recording the decision.
+    db.exec("CREATE TRIGGER block_decision BEFORE UPDATE ON proposals BEGIN SELECT RAISE(ABORT, 'interrupted'); END");
+    expect(() => decide(db, proposal, "ross", true, TODAY, now())).toThrow("interrupted");
+    expect(task().status).toBe("open");
+    expect(db.query("SELECT * FROM completions").all()).toEqual([]);
+    expect(receipts()).toBe(before);
+
+    // Once the interruption is gone, approving applies it exactly once.
+    db.exec("DROP TRIGGER block_decision");
+    decide(db, proposal, "ross", true, TODAY, now());
+    decide(db, proposal, "ross", true, TODAY, now());
+    expect(task().status).toBe("done");
+    expect(db.query("SELECT count(*) AS n FROM completions").get()).toEqual({ n: 1 });
+  });
+
   test("only the writer can decide a proposal, and a dismissed one stays dismissed", async () => {
     await ask(db, scripted({ reply: "OK", actions: [raw({ type: "complete", task_id: task().id })] }), "ross", "done", TODAY, now);
     const proposal = db.query<{ id: number }, []>("SELECT id FROM proposals").get()!.id;

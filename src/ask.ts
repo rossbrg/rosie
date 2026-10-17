@@ -284,30 +284,47 @@ interface ProposalRow {
 // Approve or dismiss a proposal. Only the person who asked can decide it. Approving
 // twice is a no-op; approving something the household has since changed fails with
 // the reason and leaves everything else as it was.
+//
+// The check, the write and marking the proposal decided happen in one IMMEDIATE
+// transaction, so a crash, a second process or a double tap can never apply the
+// same proposal twice or leave a change applied while the proposal still reads
+// "proposed".
 export function decide(db: Database, proposalId: number, personId: string, approve: boolean, today: string, now: Date): void {
-  const p = db
-    .query<ProposalRow, [number]>(
-      "SELECT p.id, p.action, p.status, r.person_id FROM proposals p JOIN requests r ON r.id = p.request_id WHERE p.id = ?",
-    )
-    .get(proposalId);
-  if (!p || p.person_id !== personId) throw new DecisionError("No such suggestion.", 404);
-  if (p.status === (approve ? "applied" : "dismissed")) return;
-  if (p.status !== "proposed") throw new DecisionError(`That suggestion was already ${p.status}.`, 409);
-  if (!approve) {
-    db.run("UPDATE proposals SET status = 'dismissed', decided_by = ?, decided_at = ? WHERE id = ?", [personId, now.toISOString(), p.id]);
-    return;
-  }
-  try {
-    apply(db, JSON.parse(p.action) as Action, personId, today, now);
-    db.run("UPDATE proposals SET status = 'applied', decided_by = ?, decided_at = ? WHERE id = ?", [personId, now.toISOString(), p.id]);
-  } catch (err) {
-    if (!(err instanceof ActionError)) throw err;
-    db.run("UPDATE proposals SET status = 'failed', decided_by = ?, decided_at = ?, error = ? WHERE id = ?", [
-      personId,
-      now.toISOString(),
-      err.message,
-      p.id,
-    ]);
-    throw new DecisionError(`Couldn't do that: ${err.message}.`, 409);
-  }
+  const failure = db
+    .transaction((): string | null => {
+      const p = db
+        .query<ProposalRow, [number]>(
+          "SELECT p.id, p.action, p.status, r.person_id FROM proposals p JOIN requests r ON r.id = p.request_id WHERE p.id = ?",
+        )
+        .get(proposalId);
+      if (!p || p.person_id !== personId) throw new DecisionError("No such suggestion.", 404);
+      if (p.status === (approve ? "applied" : "dismissed")) return null;
+      if (p.status !== "proposed") throw new DecisionError(`That suggestion was already ${p.status}.`, 409);
+      if (!approve) {
+        markDecided(db, p.id, "dismissed", personId, now);
+        return null;
+      }
+      try {
+        // apply's own transaction nests as a savepoint, so a refused action rolls
+        // back only its own writes and the proposal can still be marked failed.
+        apply(db, JSON.parse(p.action) as Action, personId, today, now);
+      } catch (err) {
+        if (!(err instanceof ActionError)) throw err;
+        markDecided(db, p.id, "failed", personId, now, err.message);
+        return err.message;
+      }
+      markDecided(db, p.id, "applied", personId, now);
+      return null;
+    })
+    .immediate();
+  if (failure !== null) throw new DecisionError(`Couldn't do that: ${failure}.`, 409);
+}
+
+// Only moves a proposal out of "proposed", so it can be decided once.
+function markDecided(db: Database, id: number, status: "applied" | "dismissed" | "failed", personId: string, now: Date, error: string | null = null) {
+  const changed = db.run(
+    "UPDATE proposals SET status = ?, decided_by = ?, decided_at = ?, error = ? WHERE id = ? AND status = 'proposed'",
+    [status, personId, now.toISOString(), error, id],
+  ).changes;
+  if (changed !== 1) throw new Error(`proposal ${id} was decided by someone else`);
 }
