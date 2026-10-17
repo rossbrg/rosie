@@ -55,8 +55,8 @@ export function renderHome(
   me: Viewer,
   today: string,
   csrf: string,
-  // `now` is set when "Tell Rosie" is available.
-  ask: { now: Date } | null = null,
+  // Set when "Tell Rosie" is configured; `unavailable` says why the box is off for now.
+  ask: { now: Date; unavailable?: string | null } | null = null,
 ): string {
   const open = db
     .query<OpenRow, []>(
@@ -153,7 +153,7 @@ export function renderHome(
     <p class="summary">${esc(summary)}</p>
   </section>
 
-  ${ask ? askSection(db, me, csrf, ask.now) : ""}
+  ${ask ? askSection(db, me, csrf, ask.now, ask.unavailable ?? null) : ""}
 
   <section aria-labelledby="due-h">
     <h2 id="due-h">Due now</h2>
@@ -206,7 +206,7 @@ function dueCard(o: OpenRow, today: string, csrf: string): string {
 
 // The "Tell Rosie" box, with this person's latest messages and what Rosie suggested.
 // Shows anything still waiting on a decision, plus the last day's conversation.
-function askSection(db: Database, me: Viewer, csrf: string, now: Date): string {
+function askSection(db: Database, me: Viewer, csrf: string, now: Date, unavailable: string | null): string {
   const requests = db
     .query<RequestRow, [string, string]>(
       `SELECT r.id, r.text, r.status, r.reply, r.error FROM requests r
@@ -243,12 +243,16 @@ function askSection(db: Database, me: Viewer, csrf: string, now: Date): string {
   return `
   <section id="ask" aria-labelledby="ask-h">
     <h2 id="ask-h">Tell Rosie</h2>
-    <form method="post" action="/ask" class="ask" onsubmit="const b = this.querySelector('button'); b.disabled = true; b.textContent = 'Reading…';">
+    ${
+      unavailable
+        ? `<p class="bubble rosie error">${esc(unavailable)}</p>`
+        : `<form method="post" action="/ask" class="ask" onsubmit="const b = this.querySelector('button'); b.disabled = true; b.textContent = 'Reading…';">
       <input type="hidden" name="csrf" value="${esc(csrf)}">
       <textarea name="message" rows="2" maxlength="2000" required aria-label="Message to Rosie"
         placeholder="“Vacuumed the inserts yesterday” or “move the tank to Sunday”"></textarea>
       <button type="submit">Send</button>
-    </form>
+    </form>`
+    }
     ${thread}
   </section>`;
 }

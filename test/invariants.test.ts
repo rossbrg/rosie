@@ -48,7 +48,7 @@ describe("who may write", () => {
           .map((n) => n.trim())
           .filter((n) => n && !n.startsWith("type "));
         if (from === "./ask") {
-          expect(values.filter((v) => !["InterpretError", "OUTPUT_SCHEMA", "parseInterpretation", "SYSTEM_PROMPT", "userContent"].includes(v))).toEqual([]);
+          expect(values.filter((v) => !["InterpretError", "ModelUnavailable", "OUTPUT_SCHEMA", "parseInterpretation", "SYSTEM_PROMPT", "userContent"].includes(v))).toEqual([]);
         } else {
           expect({ file: f.name, from, values }).toEqual({ file: f.name, from, values: [] });
         }

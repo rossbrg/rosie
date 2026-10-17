@@ -1,6 +1,8 @@
 import type { Database } from "bun:sqlite";
+import { createHash } from "node:crypto";
 import { ActionError, apply, describe, validate, type Action, type RawAction } from "./actions";
 import { nextDue, type Schedule } from "./maintenance";
+import { deliverOutbox, enqueue, type Channel } from "./notify";
 
 // "Tell Rosie": a person writes what happened or what they want in their own words.
 // The model reads it with a snapshot of the household and returns a reply plus
@@ -37,11 +39,26 @@ export interface Interpretation {
   actions: RawAction[];
   model?: string;
   usage?: { input_tokens: number; output_tokens: number };
+  // The model's answer as it came back, kept in the call log.
+  raw?: string;
+  // Why earlier interpreters in a fallback chain didn't answer.
+  fallbacks?: string[];
+}
+
+// A second look after validation refused some of the first answer.
+export interface Retry {
+  previous: string;
+  problems: string[];
+}
+
+export interface InterpretOptions {
+  signal?: AbortSignal;
+  retry?: Retry;
 }
 
 export interface Interpreter {
   model: string;
-  interpret(snapshot: Snapshot, message: string): Promise<Interpretation>;
+  interpret(snapshot: Snapshot, message: string, opts?: InterpretOptions): Promise<Interpretation>;
 }
 
 export function snapshot(db: Database, speakerId: string, today: string): Snapshot {
@@ -144,11 +161,34 @@ export const OUTPUT_SCHEMA = {
   },
 } as const;
 
-export function userContent(snap: Snapshot, message: string): string {
-  return `<household_snapshot>\n${JSON.stringify(snap, null, 2)}\n</household_snapshot>\n\n<message from="${snap.speaker.id}">\n${message}\n</message>`;
+// Changes whenever the prompt or schema does, so the call log shows which one produced an answer.
+export const PROMPT_VERSION = createHash("sha256").update(SYSTEM_PROMPT).update(JSON.stringify(OUTPUT_SCHEMA)).digest("hex").slice(0, 12);
+
+export function userContent(snap: Snapshot, message: string, retry?: Retry): string {
+  const base = `<household_snapshot>\n${JSON.stringify(snap, null, 2)}\n</household_snapshot>\n\n<message from="${snap.speaker.id}">\n${message}\n</message>`;
+  if (!retry) return base;
+  return `${base}\n\n<previous_answer>\n${retry.previous}\n</previous_answer>\n\n<problems>\n${retry.problems.map((p) => `- ${p}`).join("\n")}\n</problems>\n\nYour previous answer proposed changes that can't be made, for the reasons under <problems>. Answer the message again with those fixed. If a change can't be made at all, leave it out and say why in the reply.`;
 }
 
-export class InterpretError extends Error {}
+// The model answered, but not with something Rosie can use (bad JSON, a refusal).
+export class InterpretError extends Error {
+  constructor(
+    message: string,
+    readonly detail?: string,
+  ) {
+    super(message);
+  }
+}
+
+// No model could be reached: a sign-in failed, a plan limit was hit, or it timed out.
+export class ModelUnavailable extends Error {
+  constructor(readonly detail: string) {
+    super(UNAVAILABLE);
+  }
+}
+
+const UNAVAILABLE = "Rosie can't read messages right now. Use the buttons on the page; she'll be back soon.";
+const OVER_CAP = "Rosie has read all the messages she can for today. Use the buttons on the page until tomorrow.";
 
 // Checks the shape even though structured output should guarantee it: the result
 // drives database writes, so a surprise here must fail loudly, not half-apply.
@@ -172,6 +212,16 @@ export interface AskResult {
   error: string | null;
 }
 
+export interface AskOptions {
+  // Model calls allowed per household day, retries included. Default 50.
+  dailyCap?: number;
+  // Who hears about it, once a day, when Rosie can't reach a model or hits the cap.
+  alertPersonId?: string;
+  channels?: Channel[];
+}
+
+export const DAILY_CAP = 50;
+
 // Validates what the model proposed. Anything that names a missing task, person or
 // date is dropped with a reason rather than shown as something to approve.
 export function review(db: Database, speaker: string, today: string, raw: RawAction[]) {
@@ -189,6 +239,15 @@ export function review(db: Database, speaker: string, today: string, raw: RawAct
   return { proposals, rejected };
 }
 
+function callsOn(db: Database, day: string): number {
+  return db.query<{ n: number }, [string]>("SELECT count(*) AS n FROM model_calls WHERE day = ?").get(day)!.n;
+}
+
+// Why the box can't take a message right now, or null if it can.
+export function askUnavailable(db: Database, today: string, opts: AskOptions = {}): string | null {
+  return callsOn(db, today) >= (opts.dailyCap ?? DAILY_CAP) ? OVER_CAP : null;
+}
+
 export async function ask(
   db: Database,
   interpreter: Interpreter,
@@ -196,38 +255,116 @@ export async function ask(
   message: string,
   today: string,
   now: () => Date,
+  opts: AskOptions = {},
 ): Promise<AskResult> {
   const requestId = Number(
     db.run("INSERT INTO requests (person_id, text, status, created_at) VALUES (?, ?, 'pending', ?)", [speaker, message, now().toISOString()])
       .lastInsertRowid,
   );
-  let result: Interpretation;
-  try {
-    result = await interpreter.interpret(snapshot(db, speaker, today), message);
-  } catch (err) {
-    const error = err instanceof InterpretError ? err.message : "Rosie couldn't reach her model. Try again in a minute.";
+  const failed = (error: string, detail?: string): AskResult => {
     db.run("UPDATE requests SET status = 'error', error = ?, model = ?, finished_at = ? WHERE id = ?", [
-      err instanceof InterpretError ? error : `${error} (${String(err)})`,
+      detail ? `${error} (${detail})` : error,
       interpreter.model,
       now().toISOString(),
       requestId,
     ]);
     return { requestId, reply: null, proposals: [], rejected: [], error };
+  };
+  const cap = opts.dailyCap ?? DAILY_CAP;
+  if (callsOn(db, today) >= cap) {
+    await alert(db, opts, `model-cap:${today}`, {
+      subject: "Tell Rosie is off until tomorrow",
+      body: `Rosie made her ${cap} model calls for today, so the Tell Rosie box is off until tomorrow. Reminders and the buttons on the page still work.`,
+    }, now());
+    return failed(OVER_CAP);
   }
 
-  const { proposals, rejected } = review(db, speaker, today, result.actions);
+  const snap = snapshot(db, speaker, today);
+  // One model call, logged whether it works or not. Validation runs here so the log
+  // records how many of the model's actions were usable.
+  const attempt = async (n: number, retry?: Retry) => {
+    const started = performance.now();
+    const log = (status: string, fields: { model?: string; usage?: Interpretation["usage"]; raw?: string; rejected?: string[]; error?: string }) =>
+      db.run(
+        `INSERT INTO model_calls (request_id, attempt, day, interpreter, model, prompt_version, status, duration_ms,
+           input_tokens, output_tokens, raw, rejected, error, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          requestId, n, today, interpreter.model, fields.model ?? null, PROMPT_VERSION, status, Math.round(performance.now() - started),
+          fields.usage?.input_tokens ?? null, fields.usage?.output_tokens ?? null, fields.raw ?? null,
+          fields.rejected?.length ? JSON.stringify(fields.rejected) : null, fields.error ?? null, now().toISOString(),
+        ],
+      );
+    let out: Interpretation;
+    try {
+      // The time limit belongs to the interpreter (oneAtATime in src/llm.ts), so waiting
+      // for someone else's message doesn't count against this one.
+      out = await interpreter.interpret(snap, message, { retry });
+    } catch (err) {
+      const kind = err instanceof InterpretError ? "invalid" : "unavailable";
+      log(kind, { error: err instanceof InterpretError || err instanceof ModelUnavailable ? (err.detail ?? err.message) : String(err) });
+      throw err;
+    }
+    const reviewed = review(db, speaker, today, out.actions);
+    log(reviewed.rejected.length ? "rejected" : "ok", {
+      model: out.model,
+      usage: out.usage,
+      raw: out.raw ?? JSON.stringify({ reply: out.reply, actions: out.actions }),
+      rejected: reviewed.rejected,
+      error: out.fallbacks?.join("; "),
+    });
+    return { out, ...reviewed };
+  };
+
+  let result: Awaited<ReturnType<typeof attempt>>;
+  try {
+    result = await attempt(1);
+  } catch (err) {
+    if (err instanceof InterpretError) return failed(err.message, err.detail);
+    const detail = err instanceof ModelUnavailable ? err.detail : String(err);
+    await alert(db, opts, `model-down:${today}`, {
+      subject: "Tell Rosie can't reach a model",
+      body: `Tell Rosie couldn't get an answer from any model: ${detail.slice(0, 400)}\n\nReminders and the buttons on the page still work. If this keeps happening, check the Claude sign-in on the Rosie VM.`,
+    }, now());
+    return failed(UNAVAILABLE, detail);
+  }
+
+  // Some proposed actions were refused: show the model why, once, and keep the better answer.
+  if (result.rejected.length && callsOn(db, today) < cap) {
+    try {
+      const second = await attempt(2, { previous: result.out.raw ?? JSON.stringify({ reply: result.out.reply, actions: result.out.actions }), problems: result.rejected });
+      if (second.rejected.length <= result.rejected.length) result = second;
+    } catch {
+      // The first answer still stands; its usable actions are shown.
+    }
+  }
+
+  const { out, proposals, rejected } = result;
   // A rejected action means Rosie misread something; say so rather than silently dropping it.
-  const reply = rejected.length ? `${result.reply} (I left out a change I couldn't make: ${rejected.join("; ")}.)` : result.reply;
+  const reply = rejected.length ? `${out.reply} (I left out a change I couldn't make: ${rejected.join("; ")}.)` : out.reply;
   db.transaction(() => {
     db.run(
       "UPDATE requests SET status = 'answered', reply = ?, model = ?, input_tokens = ?, output_tokens = ?, finished_at = ? WHERE id = ?",
-      [reply, result.model ?? interpreter.model, result.usage?.input_tokens ?? null, result.usage?.output_tokens ?? null, now().toISOString(), requestId],
+      [reply, out.model ?? interpreter.model, out.usage?.input_tokens ?? null, out.usage?.output_tokens ?? null, now().toISOString(), requestId],
     );
     for (const p of proposals) {
       db.run("INSERT INTO proposals (request_id, action, summary) VALUES (?, ?, ?)", [requestId, JSON.stringify(p.action), p.summary]);
     }
   })();
   return { requestId, reply, proposals, rejected, error: null };
+}
+
+// One message a day per kind of trouble, sent right away rather than at the nightly check.
+async function alert(db: Database, opts: AskOptions, key: string, msg: { subject: string; body: string }, now: Date) {
+  if (!opts.alertPersonId || !db.query("SELECT 1 FROM people WHERE id = ?").get(opts.alertPersonId)) return;
+  enqueue(db, key, opts.alertPersonId, msg, now);
+  if (opts.channels?.length) {
+    try {
+      await deliverOutbox(db, opts.channels, now);
+    } catch {
+      // Still queued; the nightly check retries it.
+    }
+  }
 }
 
 export class DecisionError extends Error {

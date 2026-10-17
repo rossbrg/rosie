@@ -4,7 +4,7 @@ A harness for managing a household and family: an agent that helps a family noti
 
 ## Running Rosie
 
-Rosie is a small [Bun](https://bun.sh) service with a SQLite database. Its one runtime dependency is the Anthropic SDK, for "Tell Rosie".
+Rosie is a small [Bun](https://bun.sh) service with a SQLite database. Its one runtime dependency is the Anthropic SDK, used only by the direct route for "Tell Rosie".
 
 ```sh
 bun install
@@ -37,15 +37,41 @@ tailscale serve --bg 8787
 
 ## Tell Rosie
 
-With `ANTHROPIC_API_KEY` set, the page has a box where either of you can write what happened or what you want in your own words: "vacuumed the inserts yesterday, left head was filthy", "push the dehumidifier to Sunday", "start tracking descaling the kettle every 3 months, Carly owns it", or a question like "when did we last descale the coffee brewer?".
+With `ROSIE_INTERPRETER` set, the page has a box where either of you can write what happened or what you want in your own words: "vacuumed the inserts yesterday, left head was filthy", "push the dehumidifier to Sunday", "start tracking descaling the kettle every 3 months, Carly owns it", or a question like "when did we last descale the coffee brewer?".
 
 - Rosie reads the message with a snapshot of the household (people, items, schedules, open tasks, recent history) and answers with a short reply plus suggested changes: mark a task done, move a task, record unscheduled work, add a schedule, or change an owner.
-- Code checks every suggestion against the database and writes the one-line description you approve, so what you read is what happens. Nothing is written until you tap **Do it**, and only the person who asked can approve. Each applied change leaves a receipt in `runs`.
-- The model call is in `src/ask.ts`, the actions in `src/actions.ts`.
+- Code checks every suggestion against the database and writes the one-line description you approve, so what you read is what happens. If a suggestion names something that doesn't exist, Rosie gets one more try with the reason. Nothing is written until you tap **Do it**, and only the person who asked can approve. Each applied change leaves a receipt in `runs`.
+- Reminders never depend on a model. If no model answers, the box says to use the buttons and Ross gets one alert that day.
+
+### Models: the household's subscriptions
+
+Rosie runs on Ross's Claude subscription with his Codex subscription as the fallback; there is no API key. `ROSIE_INTERPRETER` lists what to try, in order:
+
+| Name | What it does | Sign-in |
+|---|---|---|
+| `claude-cli` | Runs `claude -p` as a locked-down parser: no tools, settings, MCP servers, memory or saved session, in an empty folder | `claude setup-token`, saved as `CLAUDE_CODE_OAUTH_TOKEN` in `.env` |
+| `claude-direct` | Calls the Messages API itself with the same token; no extra process per message | the same `CLAUDE_CODE_OAUTH_TOKEN` |
+| `codex-cli` | Runs `codex exec`, read-only and ephemeral | `CODEX_HOME=<folder> codex login --device-auth` once, with that folder as `ROSIE_CODEX_HOME` |
+
+For example `ROSIE_INTERPRETER=claude-cli,codex-cli`. On the server, install the CLIs for the user that runs Rosie and give their full paths in `ROSIE_CLAUDE_BIN` and `ROSIE_CODEX_BIN`, since systemd's `PATH` is short.
+
+- Messages are read one at a time, and each gets 90 seconds, fallbacks included.
+- Rosie makes at most `ROSIE_DAILY_MODEL_CALLS` model calls a day (default 50, retries included), so she can't eat into the allowance Ross codes with. After that the box is replaced by a note until tomorrow.
+- Every call is logged in `model_calls`: which route and model answered, the prompt version, how long it took, tokens, the raw answer, and anything validation refused.
+- The model code is in `src/llm.ts`, the prompt and the approval flow in `src/ask.ts`, the actions in `src/actions.ts`.
 
 ### Evals
 
-`bun run eval` runs [evals/cases.json](evals/cases.json) (about 30 real-style messages against the household in [evals/household.json](evals/household.json)) through the real model and scores the suggestions you would see, field by field. The set includes the hard cases: an ambiguous "done", a task finished by the other person, relative dates, two changes in one message, questions that should change nothing, and a prompt injection planted in the history notes. Run it after any change to the prompt, the schema or the model, and add a case for every real message Rosie gets wrong. It needs `ANTHROPIC_API_KEY` and writes details to `evals/results/`.
+`bun run eval` runs [evals/cases.json](evals/cases.json) (28 real-style messages against the household in [evals/household.json](evals/household.json)) through a real model and scores the suggestions you would see, field by field. The set includes the hard cases: an ambiguous "done", a task finished by the other person, relative dates, two changes in one message, questions that should change nothing, and a prompt injection planted in the history notes. Run it after any change to the prompt, the schema or the model, and add a case for every real message Rosie gets wrong.
+
+```sh
+bun run eval                                  # ROSIE_INTERPRETER, or claude-cli if unset
+bun run eval --interpreter codex-cli          # one route
+bun run eval --interpreter claude-direct      # needs CLAUDE_CODE_OAUTH_TOKEN
+bun run eval --only snooze --repeat 3         # some cases, several times
+```
+
+Each case goes through the same path as the page, retry included. The summary gives the pass count and how long each message took; details go to `evals/results/`.
 
 ## Pilot
 

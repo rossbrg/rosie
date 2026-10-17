@@ -8,16 +8,19 @@ import {
   decide,
   DecisionError,
   InterpretError,
+  ModelUnavailable,
   parseInterpretation,
+  PROMPT_VERSION,
   snapshot,
   type Interpreter,
+  type Retry,
   type Snapshot,
 } from "../src/ask";
 import { migrate } from "../src/db";
 import { nextDue, type Schedule } from "../src/maintenance";
 import { runNightly } from "../src/nightly";
 import type { Channel } from "../src/notify";
-import { claudeInterpreter } from "../src/llm";
+import { claudeDirect } from "../src/llm";
 import { createHandler, csrfToken } from "../src/web";
 
 const TZ = "UTC";
@@ -42,13 +45,15 @@ const raw = (a: Partial<RawAction> & Pick<RawAction, "type">): RawAction => ({
 });
 
 // Returns canned answers and remembers what it was shown.
-function scripted(...answers: ({ reply: string; actions: RawAction[] } | Error)[]): Interpreter & { seen: { snap: Snapshot; message: string }[] } {
-  const seen: { snap: Snapshot; message: string }[] = [];
+function scripted(
+  ...answers: ({ reply: string; actions: RawAction[] } | Error)[]
+): Interpreter & { seen: { snap: Snapshot; message: string; retry?: Retry }[] } {
+  const seen: { snap: Snapshot; message: string; retry?: Retry }[] = [];
   return {
     model: "test-model",
     seen,
-    async interpret(snap, message) {
-      seen.push({ snap, message });
+    async interpret(snap, message, opts = {}) {
+      seen.push({ snap, message, retry: opts.retry });
       const next = answers.shift();
       if (!next) throw new Error("no scripted answer left");
       if (next instanceof Error) throw next;
@@ -207,13 +212,69 @@ describe("asking and approving", () => {
 
   test("a model failure is recorded on the request and nothing is proposed", async () => {
     const result = await ask(db, scripted(new Error("ECONNRESET")), "ross", "done", TODAY, now);
-    expect(result.error).toBe("Rosie couldn't reach her model. Try again in a minute.");
+    const unavailable = "Rosie can't read messages right now. Use the buttons on the page; she'll be back soon.";
+    expect(result.error).toBe(unavailable);
     expect(db.query("SELECT status, error, model FROM requests").get()).toEqual({
       status: "error",
-      error: "Rosie couldn't reach her model. Try again in a minute. (Error: ECONNRESET)",
+      error: `${unavailable} (Error: ECONNRESET)`,
       model: "test-model",
     });
     expect(db.query("SELECT COUNT(*) AS n FROM proposals").get()).toEqual({ n: 0 });
+  });
+
+  test("when validation refuses an action, the model gets one more try with the reasons", async () => {
+    const rosie = scripted(
+      { reply: "Done.", actions: [raw({ type: "complete", task_id: 42 })] },
+      { reply: "Marked the inserts done.", actions: [raw({ type: "complete", task_id: task().id })] },
+    );
+    const result = await ask(db, rosie, "ross", "did the inserts", TODAY, now);
+    expect(rosie.seen[1]!.retry).toEqual({
+      previous: JSON.stringify({ reply: "Done.", actions: [raw({ type: "complete", task_id: 42 })] }),
+      problems: ["there is no task 42"],
+    });
+    expect(result.reply).toBe("Marked the inserts done.");
+    expect(result.proposals.map((p) => p.action.type)).toEqual(["complete"]);
+    expect(db.query("SELECT attempt, status, rejected, prompt_version FROM model_calls ORDER BY id").all()).toEqual([
+      { attempt: 1, status: "rejected", rejected: JSON.stringify(["there is no task 42"]), prompt_version: PROMPT_VERSION },
+      { attempt: 2, status: "ok", rejected: null, prompt_version: PROMPT_VERSION },
+    ]);
+  });
+
+  test("a model that can't be reached alerts Ross once a day, right away", async () => {
+    const sent: string[] = [];
+    const push: Channel = { name: "push", unreachable: () => null, send: async (to, msg) => void sent.push(`${to.id}: ${msg.subject}`) };
+    const opts = { alertPersonId: "ross", channels: [push] };
+    await ask(db, scripted(new ModelUnavailable("claude-cli: not signed in")), "carly", "done", TODAY, now, opts);
+    await ask(db, scripted(new ModelUnavailable("claude-cli: not signed in")), "carly", "done", TODAY, now, opts);
+    // The page's alert goes out at once (along with anything else already queued).
+    expect(sent.filter((m) => m.includes("Tell Rosie"))).toEqual(["ross: Tell Rosie can't reach a model"]);
+    expect(db.query("SELECT status, error FROM model_calls").all()).toEqual([
+      { status: "unavailable", error: "claude-cli: not signed in" },
+      { status: "unavailable", error: "claude-cli: not signed in" },
+    ]);
+  });
+
+  test("an unusable answer is logged but doesn't alert anyone", async () => {
+    const result = await ask(db, scripted(new InterpretError("Rosie's answer wasn't valid JSON")), "ross", "done", TODAY, now, { alertPersonId: "ross" });
+    expect(result.error).toBe("Rosie's answer wasn't valid JSON");
+    expect(db.query("SELECT status FROM model_calls").get()).toEqual({ status: "invalid" });
+    expect(db.query("SELECT COUNT(*) AS n FROM outbox WHERE dedupe_key LIKE 'model-%'").get()).toEqual({ n: 0 });
+  });
+
+  test("after the daily cap, messages aren't sent to the model and Ross hears about it once", async () => {
+    const rosie = scripted({ reply: "OK", actions: [] });
+    const opts = { dailyCap: 1, alertPersonId: "ross" };
+    expect((await ask(db, rosie, "ross", "first", TODAY, now, opts)).error).toBeNull();
+    const over = await ask(db, rosie, "carly", "second", TODAY, now, opts);
+    await ask(db, rosie, "carly", "third", TODAY, now, opts);
+    expect(over.error).toBe("Rosie has read all the messages she can for today. Use the buttons on the page until tomorrow.");
+    expect(rosie.seen).toHaveLength(1);
+    expect(db.query("SELECT person_id, channel, subject FROM outbox WHERE dedupe_key LIKE 'model-%' ORDER BY channel").all()).toEqual([
+      { person_id: "ross", channel: "email", subject: "Tell Rosie is off until tomorrow" },
+      { person_id: "ross", channel: "push", subject: "Tell Rosie is off until tomorrow" },
+    ]);
+    // A new day starts a new count.
+    expect((await ask(db, scripted({ reply: "OK", actions: [] }), "ross", "next day", "2026-10-21", now, opts)).error).toBeNull();
   });
 });
 
@@ -297,15 +358,26 @@ describe("the model call", () => {
       stop_reason: "end_turn",
       content: [{ type: "text", text: JSON.stringify({ reply: "Hi", actions: [] }), citations: null }],
     });
-    const out = await claudeInterpreter({ client }).interpret(snapshot(db, "ross", TODAY), "hello");
-    expect(out).toEqual({ reply: "Hi", actions: [], model: "claude-opus-5-5", usage: { input_tokens: 10, output_tokens: 5 } });
-    expect(calls[0]).toMatchObject({ model: "claude-opus-5-5", fallbacks: "default", betas: ["server-side-fallback-2026-07-01"] });
+    const out = await claudeDirect({ client }).interpret(snapshot(db, "ross", TODAY), "hello");
+    expect(out).toEqual({
+      reply: "Hi",
+      actions: [],
+      model: "claude-direct:claude-opus-5-5",
+      usage: { input_tokens: 10, output_tokens: 5 },
+      raw: JSON.stringify({ reply: "Hi", actions: [] }),
+    });
+    expect(calls[0]).toMatchObject({ model: "claude-opus-5-5", fallbacks: "default", betas: ["oauth-2025-04-20", "server-side-fallback-2026-07-01"] });
     expect((calls[0]!.output_config as { format: { type: string } }).format.type).toBe("json_schema");
   });
 
   test("a refusal becomes a readable error", async () => {
     const { client } = fakeClient({ stop_reason: "refusal", content: [] });
-    expect(claudeInterpreter({ client }).interpret(snapshot(db, "ross", TODAY), "hello")).rejects.toThrow(InterpretError);
+    expect(claudeDirect({ client }).interpret(snapshot(db, "ross", TODAY), "hello")).rejects.toThrow(InterpretError);
+  });
+
+  test("a sign-in or network failure means the model is unavailable", async () => {
+    const client = { beta: { messages: { create: async () => Promise.reject(new Error("401 invalid token")) } } } as unknown as Anthropic;
+    expect(claudeDirect({ client }).interpret(snapshot(db, "ross", TODAY), "hello")).rejects.toThrow(ModelUnavailable);
   });
 
   test("malformed answers are rejected", () => {
@@ -350,6 +422,15 @@ describe("web", () => {
     expect((await handle(post(`/proposals/${proposal}/approve`, { csrf }))).status).toBe(303);
     expect(task().status).toBe("done");
     expect(await (await handle(as("ross@test", "/"))).text()).toContain(">Done<");
+  });
+
+  test("once the daily cap is reached the box is replaced by a note", async () => {
+    const handle = createHandler(db, { timeZone: TZ, now, interpreter: scripted({ reply: "OK", actions: [] }), ask: { dailyCap: 1 } });
+    expect(await (await handle(as("ross@test", "/"))).text()).toContain('action="/ask"');
+    await handle(post("/ask", { csrf: csrfToken(db, "ross"), message: "hi" }));
+    const page = await (await handle(as("ross@test", "/"))).text();
+    expect(page).not.toContain('action="/ask"');
+    expect(page).toContain("Use the buttons on the page until tomorrow.");
   });
 
   test("an overlong message is refused before reaching the model", async () => {

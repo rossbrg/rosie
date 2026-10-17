@@ -119,6 +119,27 @@ const MIGRATIONS: string[] = [
   -- Set on the first snooze, so the page can say what it was originally due.
   ALTER TABLE occurrences ADD COLUMN snoozed_from TEXT;
   `,
+  `
+  -- Every model call "Tell Rosie" makes, for the daily cap and for seeing what the model did.
+  CREATE TABLE model_calls (
+    id INTEGER PRIMARY KEY,
+    request_id INTEGER NOT NULL REFERENCES requests(id),
+    attempt INTEGER NOT NULL,             -- 2 is the retry after validation refused something
+    day TEXT NOT NULL,                    -- household date the daily cap counts against
+    interpreter TEXT NOT NULL,            -- what was configured, e.g. "claude-cli:opus → codex-cli:default"
+    model TEXT,                           -- what answered
+    prompt_version TEXT NOT NULL,
+    status TEXT NOT NULL CHECK (status IN ('ok', 'rejected', 'invalid', 'unavailable')),
+    duration_ms INTEGER NOT NULL,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    raw TEXT,                             -- the model's answer as it came back
+    rejected TEXT,                        -- JSON list of why validation refused actions
+    error TEXT,                           -- why it failed, or why earlier fallbacks didn't answer
+    created_at TEXT NOT NULL
+  );
+  CREATE INDEX model_calls_day ON model_calls (day);
+  `,
 ];
 
 export function openDb(path: string): Database {
