@@ -73,3 +73,51 @@ describe("sessions survive a restart, and sign-out survives it too", () => {
     db.close();
   });
 });
+
+describe("the bootstrap command", () => {
+  // Runs `bun src/main.ts auth-bootstrap` for real, settings passed in the environment
+  // (dummy values), never as arguments.
+  const ENV = {
+    ROSIE_AUTH_MODE: "email-otp",
+    BETTER_AUTH_URL: "https://rosie.example.ts.net",
+    BETTER_AUTH_SECRET: "test-secret-0123456789-abcdefghijklmnop",
+    RESEND_API_KEY: "re_test_dummy_key",
+    ROSIE_EMAIL_FROM: "rosie@example.com",
+  };
+  const bootstrap = async (dbPath: string) => {
+    const p = Bun.spawn([process.execPath, join(import.meta.dir, "..", "src", "main.ts"), "auth-bootstrap"], {
+      cwd: dir,
+      env: { PATH: process.env.PATH, ...ENV, ROSIE_DB: dbPath },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const out = (await new Response(p.stdout).text()) + (await new Response(p.stderr).text());
+    return { code: await p.exited, out };
+  };
+
+  test("turning everyone off removes their sessions, and re-enabling doesn't bring an old cookie back", async () => {
+    const path = join(dir, "rosie.sqlite");
+    const box = mailbox();
+    let db = household(openDb(path));
+    const cookie = await signIn(service(db, box), box);
+    db.run("UPDATE people SET auth_enabled = 0 WHERE id = 'ross'");
+    db.close();
+
+    const off = await bootstrap(path);
+    expect(off.code).toBe(0);
+    expect(off.out).toContain("0 created, 0 updated, 1 revoked");
+    expect(off.out).toContain("Nobody can sign in now");
+    expect(off.out).not.toContain(ENV.BETTER_AUTH_SECRET);
+
+    db = openDb(path);
+    expect(db.query("SELECT count(*) AS n FROM auth_session").get()).toEqual({ n: 0 });
+    db.run("UPDATE people SET auth_enabled = 1 WHERE id = 'ross'");
+    db.close();
+    expect((await bootstrap(path)).out).toContain("1 created");
+
+    db = openDb(path);
+    const handle = createHandler(db, { timeZone: "UTC", auth: service(db, box) });
+    expect((await handle(get("/", { Cookie: cookie }))).headers.get("Location")).toBe("/sign-in");
+    db.close();
+  });
+});

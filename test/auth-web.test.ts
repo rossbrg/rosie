@@ -182,6 +182,24 @@ describe("signed in", () => {
     expect((await handle(get("/", { Cookie: cookie }))).headers.get("Location")).toBe("/sign-in");
   });
 
+  test("sign-out still ends the session when the library's limit is full", async () => {
+    const cookie = await signedInCookie();
+    db.run(`INSERT INTO auth_rate_limit (id, key, count, lastRequest) VALUES ('full', '127.0.0.1|/sign-out', 1000, ?)`, [Date.now()]);
+    const res = await handle(post("/sign-out", { csrf: csrfToken(db, "ross") }, { Cookie: cookie }));
+    expect(res.status).toBe(303);
+    expect(sessions()).toBe(0);
+    expect((await handle(get("/", { Cookie: cookie }))).headers.get("Location")).toBe("/sign-in");
+  });
+
+  test("sign-out says so when the session couldn't be deleted", async () => {
+    const cookie = await signedInCookie();
+    db.run("CREATE TRIGGER keep_sessions BEFORE DELETE ON auth_session BEGIN SELECT RAISE(ABORT, 'simulated failure'); END");
+    const res = await handle(post("/sign-out", { csrf: csrfToken(db, "ross") }, { Cookie: cookie }));
+    expect(res.status).toBe(500);
+    expect(res.headers.get("Location")).toBeNull();
+    db.run("DROP TRIGGER keep_sessions");
+  });
+
   test("a session from before an address change can't read the household", async () => {
     const cookie = await signedInCookie();
     db.run("UPDATE people SET email = 'ross.new@example.com' WHERE id = 'ross'");

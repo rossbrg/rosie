@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, setSystemTime, test } from "bu
 import { betterAuth } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { authOptions, type AuthService } from "../src/auth";
+import { bootstrapAuthUsers } from "../src/auth-users";
 import { CONFIG, COOKIE, get, household, mailbox, ORIGIN, post, service, sessionFrom, signIn } from "./auth-helpers";
 
 // The real library against a throwaway database, with the clock it reads moved by
@@ -311,5 +312,51 @@ describe("requests into the sign-in steps", () => {
 
   test("auth pages are never cached", async () => {
     for (const res of [await send(), await verify("000000")]) expect(res.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+describe("found in review", () => {
+  test("a code issued before a bootstrap can't be used after it", async () => {
+    await send();
+    const code = box.last();
+    bootstrapAuthUsers(db, new Date());
+    expect((await verify(code)).status).toBe(400);
+    expect(count("auth_session")).toBe(0);
+  });
+
+  test("an address moved to someone else doesn't carry its pending code to them", async () => {
+    db.run("UPDATE people SET email = 'shared@example.com' WHERE id = 'ross'");
+    bootstrapAuthUsers(db, new Date());
+    await send("shared@example.com");
+    const code = box.last("shared@example.com");
+    db.run("UPDATE people SET email = 'ross@example.com' WHERE id = 'ross'");
+    db.run("UPDATE people SET email = 'shared@example.com', auth_enabled = 1 WHERE id = 'carly'");
+    bootstrapAuthUsers(db, new Date());
+    expect((await verify(code, "shared@example.com")).status).toBe(400);
+    expect(count("auth_session")).toBe(0);
+  });
+
+  test("wrong codes for a known and an unknown address meet the same limit", async () => {
+    const burst = async (email: string) => {
+      const statuses = [];
+      for (let i = 0; i < 4; i++) statuses.push((await verify("123456", email)).status);
+      return statuses;
+    };
+    const unknown = await burst("stranger@example.com");
+    at(120);
+    const carly = await burst("carly@example.com");
+    at(240);
+    const ross = await burst("ross@example.com");
+    expect(unknown).toEqual([400, 400, 400, 429]);
+    expect(carly).toEqual(unknown);
+    expect(ross).toEqual(unknown);
+  });
+
+  test("codes are stored keyed with the server secret, not as a bare hash", async () => {
+    await send();
+    const code = box.last();
+    const bare = new Bun.CryptoHasher("sha256").update(code).digest("base64url");
+    const stored = db.query<{ value: string }, []>("SELECT value FROM auth_verification").get()!.value;
+    expect(stored.startsWith(`${bare}:`)).toBe(false);
   });
 });

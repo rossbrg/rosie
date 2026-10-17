@@ -1,4 +1,5 @@
 import type { Database } from "bun:sqlite";
+import { createHmac } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { APIError, createAuthMiddleware } from "better-auth/api";
 import { emailOTP } from "better-auth/plugins/email-otp";
@@ -68,7 +69,15 @@ export function authOptions(db: Database, config: EmailAuthConfig, capture: (ema
     account: { modelName: "auth_account", accountLinking: { enabled: false } },
     verification: { modelName: "auth_verification" },
     emailAndPassword: { enabled: false },
-    rateLimit: { enabled: true, storage: "database" as const, modelName: "auth_rate_limit", window: 60, max: 30 },
+    rateLimit: {
+      enabled: true,
+      storage: "database" as const,
+      modelName: "auth_rate_limit",
+      window: 60,
+      max: 30,
+      // Signing out must always work; a full bucket would leave the session alive.
+      customRules: { "/sign-out": false as const },
+    },
     advanced: {
       useSecureCookies: true,
       cookiePrefix: "rosie",
@@ -103,7 +112,9 @@ export function authOptions(db: Database, config: EmailAuthConfig, capture: (ema
         expiresIn: 300,
         allowedAttempts: 3,
         disableSignUp: true,
-        storeOTP: "hashed",
+        // Keyed with the server secret, so a copy of the database alone can't be
+        // used to try all million codes offline.
+        storeOTP: { hash: async (otp: string) => createHmac("sha256", config.secret).update(otp).digest("base64url") },
         resendStrategy: "rotate",
         // Hand the code back to `submit`, which sends it and can tell the person if
         // sending failed (the library would only log it).
@@ -149,7 +160,7 @@ export function createAuthService(
     return value ? `${name}=${value}` : undefined;
   }
 
-  async function resolve(request: Request): Promise<AuthResolution> {
+  async function current(request: Request): Promise<AuthResolution & { token?: string }> {
     const headers = new Headers();
     const cookie = await sessionCookie(request);
     if (!cookie) return { person: null, headers };
@@ -157,7 +168,12 @@ export function createAuthService(
     for (const c of result.headers.getSetCookie()) headers.append("Set-Cookie", c);
     const found = result.response;
     if (!found || !found.user.emailVerified) return { person: null, headers };
-    return { person: mappedAuthPerson(db, found.user.id, found.user.email), headers };
+    return { person: mappedAuthPerson(db, found.user.id, found.user.email), headers, token: found.session.token };
+  }
+
+  async function resolve(request: Request): Promise<AuthResolution> {
+    const { person, headers } = await current(request);
+    return { person, headers };
   }
 
   async function sendCode(email: string): Promise<Response> {
@@ -201,8 +217,12 @@ export function createAuthService(
     const retry = (message: string, status: number) => page({ step: "code", email, message, error: true }, status);
     if (!looksLikeEmail(email)) return page({ step: "email", message: "Enter your email address.", error: true }, 400);
     if (!/^\d{6}$/.test(code)) return retry("Enter the 6-digit code from the email.", 400);
-    // Same answer as a wrong code. (The session hook in authOptions checks again.)
-    if (!enabledAuthPeople(db).some((p) => p.email === email)) return retry("That code isn't right. Check the email and try again.", 400);
+    // An address that can't sign in has no code to use. It still goes through the
+    // library, so it meets the same attempt limit as one that can and the answers
+    // match. (The session hook in authOptions checks again.)
+    if (!enabledAuthPeople(db).some((p) => p.email === email)) {
+      await (await context).internalAdapter.deleteVerificationByIdentifier(`sign-in-otp-${email}`);
+    }
 
     const res = await call("/sign-in/email-otp", { email, otp: code });
     if (res.status === 429) return retry("Too many tries. Wait a minute, then try again.", 429);
@@ -222,11 +242,24 @@ export function createAuthService(
 
   async function signOut(request: Request, csrf: string): Promise<Response> {
     const cookie = await sessionCookie(request);
-    const { person } = await resolve(request);
-    if (!cookie || !person) return redirect("/sign-in", []);
+    const { person, token } = await current(request);
+    if (!cookie || !person || !token) return redirect("/sign-in", []);
     if (!validToken(db, person.id, csrf)) return new Response("Reload the page and try again.", { status: 403, headers: NO_STORE });
     const res = await call("/sign-out", {}, cookie);
-    return redirect("/sign-in", res.headers.getSetCookie());
+    // The library reports success even if it couldn't delete the session, so delete
+    // it here too and only say "signed out" once it is really gone.
+    try {
+      db.run("DELETE FROM auth_session WHERE token = ?", [token]);
+    } catch {
+      // Reported below: the session is still there.
+    }
+    if (db.query("SELECT 1 FROM auth_session WHERE token = ?").get(token)) {
+      return new Response("Rosie couldn't sign you out. Try again.", { status: 500, headers: NO_STORE });
+    }
+    const name = (await context).authCookies.sessionToken.name;
+    const cleared = res.status === 200 ? res.headers.getSetCookie() : [];
+    if (!cleared.some((c) => c.startsWith(`${name}=`))) cleared.push(`${name}=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax`);
+    return redirect("/sign-in", cleared);
   }
 
   return {

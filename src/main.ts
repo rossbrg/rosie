@@ -28,14 +28,13 @@ switch (process.argv[2]) {
     break;
   }
   case "auth-bootstrap": {
-    // Trusted, local, and the only way sign-in accounts are made: one per person the
-    // private seed enables. Prints counts only.
+    // Trusted, local, and the only way sign-in accounts are made or removed: one per
+    // person the private seed enables. Prints counts only.
     if (loadAuthConfig().mode !== "email-otp") fail("Set ROSIE_AUTH_MODE=email-otp (and its settings) before provisioning sign-in accounts.");
-    if (setup(() => enabledAuthPeople(db)).length === 0) {
-      fail('Nobody can sign in yet: set "auth_enabled": true for someone in seed/household.local.json, then `bun run seed`.');
-    }
+    // Also runs with nobody enabled, so turning everyone off removes their accounts and sessions.
     const counts = setup(() => bootstrapAuthUsers(db, new Date()));
     console.log(`Sign-in accounts: ${counts.created} created, ${counts.updated} updated, ${counts.revoked} revoked`);
+    if (enabledAuthPeople(db).length === 0) console.log('Nobody can sign in now; set "auth_enabled": true in seed/household.local.json to let someone in.');
     break;
   }
   case "nightly": {

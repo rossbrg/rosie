@@ -87,6 +87,10 @@ export function bootstrapAuthUsers(db: Database, now: Date): { created: number; 
       counts.revoked++;
     }
 
+    // Codes are tied to an address, not an account. Whatever just changed, no code
+    // issued before this run can sign anyone in.
+    db.run("DELETE FROM auth_verification WHERE identifier LIKE 'sign-in-otp-%'");
+
     for (const p of people.values()) {
       const m = mapped.find((x) => x.person_id === p.id);
       if (m) {
